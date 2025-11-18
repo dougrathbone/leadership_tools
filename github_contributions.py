@@ -7,6 +7,8 @@ import json
 import os
 import time
 import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 
 def handle_rate_limit(func, *args, **kwargs):
     """
@@ -30,6 +32,17 @@ def handle_rate_limit(func, *args, **kwargs):
         except Exception as e:
             # For other exceptions, don't retry
             raise e
+
+def fetch_contributor_commits(repo, contributor, start_date):
+    """
+    Fetch commits for a single contributor with rate limiting
+    """
+    try:
+        commits = list(handle_rate_limit(repo.get_commits, author=contributor, since=start_date))
+        return contributor.login, commits
+    except Exception as e:
+        print(f"Error fetching commits for {contributor.login}: {str(e)}")
+        return contributor.login, []
 
 # Get GitHub personal access token from environment variable or prompt
 access_token = os.getenv('GITHUB_TOKEN')
@@ -123,31 +136,74 @@ try:
         print(f"\n[{progress_percent:.1f}%] Scanning repository {idx}/{total_repos}: {repo_name}")
 
         try:
-            # Get all contributors for the current repository with rate limiting
+            # Get all contributors for the repository with rate limiting
             contributors = handle_rate_limit(repo.get_contributors)
+            contributors_list = list(contributors)
+            total_contributors = len(contributors_list)
+            
+            # Create username to contributor mapping for quick lookup
+            contributor_map = {c.login: c for c in contributors_list}
+            
+            print(f"   Found {total_contributors} contributors")
 
             # Get all pull requests for the repository since start date with rate limiting
             all_prs = handle_rate_limit(repo.get_pulls, state='all', sort='created', direction='desc')
             
-            # Filter PRs by date
+            # Filter PRs by date and collect all PR data in one pass
             recent_prs = []
-            for pr in all_prs:
+            pr_reviews_cache = {}  # Cache reviews to avoid repeated API calls
+            
+            print(f"   Fetching PRs and reviews since {start_date.strftime('%Y-%m-%d')}...")
+            
+            for pr_idx, pr in enumerate(all_prs):
                 if pr.created_at >= start_date:
                     recent_prs.append(pr)
+                    
+                    # Fetch reviews once per PR and cache them
+                    try:
+                        reviews = list(handle_rate_limit(pr.get_reviews))
+                        pr_reviews_cache[pr.number] = reviews
+                    except Exception as e:
+                        pr_reviews_cache[pr.number] = []
+                        
+                    # Show progress for PR processing
+                    if (pr_idx + 1) % 100 == 0:
+                        print(f"     Processed {pr_idx + 1} PRs...")
                 else:
                     break  # PRs are sorted by creation date, so we can break early
             
-            print(f"   Found {len(recent_prs)} PRs since {start_date.strftime('%Y-%m-%d')}")
+            print(f"   Found {len(recent_prs)} PRs with reviews cached")
             
-            # Convert contributors to list to get count
-            contributors_list = list(contributors)
-            total_contributors = len(contributors_list)
-            print(f"   Processing {total_contributors} contributors...")
-
-            # Loop through contributors and update total contributions
+            # Fetch commits for all contributors concurrently
+            print(f"   Fetching commits for {total_contributors} contributors concurrently...")
+            commits_data = {}
+            
+            # Use ThreadPoolExecutor for concurrent commit fetching
+            max_workers = min(10, total_contributors)  # Limit concurrent requests to avoid overwhelming API
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                # Submit all commit fetching tasks
+                future_to_contributor = {
+                    executor.submit(fetch_contributor_commits, repo, contributor, start_date): contributor
+                    for contributor in contributors_list
+                }
+                
+                # Collect results as they complete
+                completed = 0
+                for future in as_completed(future_to_contributor):
+                    username, commits = future.result()
+                    commits_data[username] = commits
+                    completed += 1
+                    
+                    # Show progress
+                    progress = (completed / total_contributors) * 100
+                    print(f"     [{progress:.0f}%] Fetched commits for {completed}/{total_contributors} contributors")
+            
+            # Now process each contributor efficiently using cached data
+            print(f"   Processing contributions for {total_contributors} contributors...")
+            
             for contrib_idx, contributor in enumerate(contributors_list, start=1):
                 username = contributor.login
-                name = contributor.name or "N/A"  # Use "N/A" if the name is not available
+                name = contributor.name or "N/A"
                 
                 # Store user profile info
                 if username not in user_profiles:
@@ -158,25 +214,25 @@ try:
                         "html_url": contributor.html_url
                     }
                 
-                # Get commits for this contributor since the start date with rate limiting
-                commits = list(handle_rate_limit(repo.get_commits, author=contributor, since=start_date))
+                # Get commits from cached data
+                commits = commits_data.get(username, [])
                 commit_count = len(commits)
                 
-                # Count PRs created by this user
-                prs_created = sum(1 for pr in recent_prs if pr.user.login == username)
-                
-                # Count PRs merged by this user (where they are the author and PR was merged)
-                prs_merged = sum(1 for pr in recent_prs if pr.user.login == username and pr.merged)
-                
-                # Count PR reviews by this user
+                # Count PRs created and merged by this user (single pass through cached data)
+                prs_created = 0
+                prs_merged = 0
                 prs_reviewed = 0
+                
                 for pr in recent_prs:
-                    try:
-                        reviews = handle_rate_limit(pr.get_reviews)
-                        prs_reviewed += sum(1 for review in reviews if review.user.login == username)
-                    except Exception as e:
-                        # Some PRs might not have reviews accessible
-                        pass
+                    # Count PRs created by this user
+                    if pr.user.login == username:
+                        prs_created += 1
+                        if pr.merged:
+                            prs_merged += 1
+                    
+                    # Count PR reviews by this user (using cached reviews)
+                    reviews = pr_reviews_cache.get(pr.number, [])
+                    prs_reviewed += sum(1 for review in reviews if review.user.login == username)
                 
                 total_contribs = commit_count + prs_created + prs_merged + prs_reviewed
                 
@@ -202,7 +258,7 @@ try:
                         commit_date = commit.commit.author.date.strftime("%Y-%m-%d")
                         daily_contributions[username][commit_date]["commits"] += 1
                     
-                    # Track daily contributions for PRs
+                    # Track daily contributions for PRs (using cached data)
                     for pr in recent_prs:
                         pr_date = pr.created_at.strftime("%Y-%m-%d")
                         if pr.user.login == username:
