@@ -112,11 +112,15 @@ for i, repo in enumerate(largest_repos):
 print(f"\nScanning {total_repos} repositories since {start_date_str}...")
 print("Press Ctrl+C to stop gracefully at any time...\n")
 
+# Track timing for progress estimation
+scan_start_time = time.time()
+
 # Loop through all repositories in the organization
 try:
     for idx, repo in enumerate(repos_list, start=1):
         repo_name = repo.full_name
-        print(f"\nScanning repository {idx}/{total_repos}: {repo_name}")
+        progress_percent = (idx / total_repos) * 100
+        print(f"\n[{progress_percent:.1f}%] Scanning repository {idx}/{total_repos}: {repo_name}")
 
         try:
             # Get all contributors for the current repository with rate limiting
@@ -134,9 +138,14 @@ try:
                     break  # PRs are sorted by creation date, so we can break early
             
             print(f"   Found {len(recent_prs)} PRs since {start_date.strftime('%Y-%m-%d')}")
+            
+            # Convert contributors to list to get count
+            contributors_list = list(contributors)
+            total_contributors = len(contributors_list)
+            print(f"   Processing {total_contributors} contributors...")
 
             # Loop through contributors and update total contributions
-            for contributor in contributors:
+            for contrib_idx, contributor in enumerate(contributors_list, start=1):
                 username = contributor.login
                 name = contributor.name or "N/A"  # Use "N/A" if the name is not available
                 
@@ -171,7 +180,8 @@ try:
                 
                 total_contribs = commit_count + prs_created + prs_merged + prs_reviewed
                 
-                print(f"\n   {name}: {commit_count} commits, {prs_created} PRs created, {prs_merged} PRs merged, {prs_reviewed} PR reviews")
+                contrib_progress = (contrib_idx / total_contributors) * 100
+                print(f"   [{contrib_progress:.0f}%] {contrib_idx}/{total_contributors} - {name}: {commit_count} commits, {prs_created} PRs created, {prs_merged} PRs merged, {prs_reviewed} PR reviews")
                 
                 if total_contribs > 0:
                     total_contributions[username]["name"] = name
@@ -201,7 +211,28 @@ try:
                                 merge_date = pr.merged_at.strftime("%Y-%m-%d") if pr.merged_at else pr_date
                                 daily_contributions[username][merge_date]["prs_merged"] += 1
 
-            print(f"Repository processed. Total unique contributors: {len([u for u in total_contributions if total_contributions[u]['total_contributions'] > 0])}")
+            active_contributors = len([u for u in total_contributions if total_contributions[u]['total_contributions'] > 0])
+            print(f"   ✓ Repository completed. Active contributors found: {active_contributors}")
+            
+            # Calculate estimated time remaining
+            elapsed_time = time.time() - scan_start_time
+            if idx > 1:  # Only show ETA after processing at least 2 repos
+                avg_time_per_repo = elapsed_time / idx
+                remaining_repos = total_repos - idx
+                eta_seconds = avg_time_per_repo * remaining_repos
+                eta_minutes = eta_seconds / 60
+                
+                if eta_minutes < 1:
+                    eta_str = f"{eta_seconds:.0f}s"
+                elif eta_minutes < 60:
+                    eta_str = f"{eta_minutes:.1f}m"
+                else:
+                    eta_hours = eta_minutes / 60
+                    eta_str = f"{eta_hours:.1f}h"
+                
+                print(f"   Overall progress: {idx}/{total_repos} repositories ({progress_percent:.1f}%) - ETA: {eta_str}")
+            else:
+                print(f"   Overall progress: {idx}/{total_repos} repositories ({progress_percent:.1f}%)")
         except Exception as e:
             if hasattr(e, 'status') and e.status == 409 and "Git Repository is empty." in str(e.data):
                 print("Skipping empty repository.")
