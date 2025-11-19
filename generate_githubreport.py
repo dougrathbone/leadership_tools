@@ -241,6 +241,12 @@ def generate_html_report(data, output_file="reports/github_report.html"):
         .individual-chart.active {{
             display: block;
         }}
+        .contributor-list.collapsed {{
+            display: none;
+        }}
+        .contributors-section.individual-mode p {{
+            display: none;
+        }}
         .stats-grid {{
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -525,7 +531,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
         </div>
 
         <div class="contributors-section">
-            <h2>Team Members</h2>
+            <h2>Team member contributions over time</h2>
             <p>Click on a team member to see their individual contribution timeline:</p>
             <div class="contributor-list">
                 {generate_contributor_cards(sorted_contributors, user_profiles)}
@@ -533,7 +539,10 @@ def generate_html_report(data, output_file="reports/github_report.html"):
         </div>
 
         <div id="individualChart" class="individual-chart">
-            <h3 id="individualTitle">Individual Contributions</h3>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+                <h3 id="individualTitle">Individual Contributions</h3>
+                <button class="show-all-btn" onclick="showAllTeamMembers()" title="Back to team member list">← Back to Team</button>
+            </div>
             <div class="chart-container">
                 <canvas id="individualTimelineChart"></canvas>
             </div>
@@ -738,6 +747,8 @@ def generate_html_report(data, output_file="reports/github_report.html"):
         const contributorCards = document.querySelectorAll('.contributor-card');
         const individualChartDiv = document.getElementById('individualChart');
         const individualTitle = document.getElementById('individualTitle');
+        const contributorList = document.querySelector('.contributor-list');
+        const contributorsSection = document.querySelector('.contributors-section');
 
         contributorCards.forEach(card => {{
             card.addEventListener('click', function() {{
@@ -752,6 +763,10 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                 const userData = individualData[username];
                 
                 if (userData) {{
+                    // Collapse the contributor list and hide description
+                    contributorList.classList.add('collapsed');
+                    contributorsSection.classList.add('individual-mode');
+                    
                     // Show individual chart
                     individualChartDiv.classList.add('active');
                     individualTitle.textContent = `${{userData.name}} - Individual Contributions`;
@@ -809,6 +824,25 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                 }}
             }});
         }});
+
+        // Function to show all team members (back button)
+        function showAllTeamMembers() {{
+            // Hide individual chart
+            individualChartDiv.classList.remove('active');
+            
+            // Show contributor list and description
+            contributorList.classList.remove('collapsed');
+            contributorsSection.classList.remove('individual-mode');
+            
+            // Remove selection from all cards
+            contributorCards.forEach(c => c.classList.remove('selected'));
+            
+            // Destroy individual chart if it exists
+            if (individualChart) {{
+                individualChart.destroy();
+                individualChart = null;
+            }}
+        }}
 
         // Table sorting functionality
         const table = document.querySelector('.contributors-table');
