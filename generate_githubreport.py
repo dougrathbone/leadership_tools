@@ -269,6 +269,18 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             align-items: center;
             flex-wrap: wrap;
         }}
+        #compareControls {{
+            display: flex !important;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 12px;
+            background-color: #f8f9fa;
+            border-radius: 6px;
+            border: 1px solid #e1e4e8;
+        }}
+        #clearComparison:hover {{
+            background-color: #f0f0f0;
+        }}
         .filter-button {{
             padding: 8px 16px;
             border: 1px solid #e1e4e8;
@@ -494,6 +506,14 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                     <option value="">Choose a team member...</option>
                     {generate_member_options(sorted_contributors, user_profiles)}
                 </select>
+                <div id="compareControls" style="display: none; margin-left: 20px; align-items: center; gap: 10px;">
+                    <span style="font-weight: 600;">Compare with:</span>
+                    <select id="compareSelect" style="padding: 8px; border: 1px solid #e1e4e8; border-radius: 6px;">
+                        <option value="">Select someone to compare...</option>
+                        {generate_member_options(sorted_contributors, user_profiles)}
+                    </select>
+                    <button id="clearComparison" style="padding: 6px 12px; border: 1px solid #e1e4e8; background: white; border-radius: 4px; cursor: pointer;" title="Clear comparison">✕</button>
+                </div>
             </div>
             <div class="chart-container">
                 <canvas id="timelineChart"></canvas>
@@ -696,6 +716,13 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             // Set the dropdown to the selected user
             memberSelect.value = username;
             
+            // Show compare controls and update options
+            const compareControls = document.getElementById('compareControls');
+            const compareSelect = document.getElementById('compareSelect');
+            compareControls.style.display = 'flex';
+            updateCompareOptions(username);
+            compareSelect.value = ''; // Clear any previous comparison
+            
             // Update the timeline chart to show individual data
             updateTimelineChart('individual', username);
             
@@ -713,23 +740,123 @@ def generate_html_report(data, output_file="reports/github_report.html"):
         // All Team button resets dropdown and shows team view
         allTeamButton.addEventListener('click', function() {{
             memberSelect.value = ''; // Reset dropdown to "Choose a team member..."
+            const compareControls = document.getElementById('compareControls');
+            const compareSelect = document.getElementById('compareSelect');
+            compareControls.style.display = 'none';
+            compareSelect.value = '';
             updateTimelineChart('all', null);
         }});
 
         // Dropdown selection shows individual member
         memberSelect.addEventListener('change', function() {{
             const selectedMember = this.value;
+            const compareControls = document.getElementById('compareControls');
+            const compareSelect = document.getElementById('compareSelect');
+            
             if (selectedMember) {{
                 updateTimelineChart('individual', selectedMember);
+                // Show compare controls
+                compareControls.style.display = 'flex';
+                // Update compare dropdown to exclude the selected member
+                updateCompareOptions(selectedMember);
             }} else {{
                 updateTimelineChart('all', null);
+                // Hide compare controls
+                compareControls.style.display = 'none';
+                compareSelect.value = '';
             }}
         }});
 
-        function updateTimelineChart(mode, username) {{
-            let newData, newLabel, newColor;
+        // Compare dropdown functionality
+        document.getElementById('compareSelect').addEventListener('change', function() {{
+            const selectedMember = memberSelect.value;
+            const compareMember = this.value;
             
-            if (mode === 'individual' && username && individualData[username]) {{
+            if (selectedMember && compareMember) {{
+                updateTimelineChart('compare', selectedMember, compareMember);
+            }} else if (selectedMember) {{
+                updateTimelineChart('individual', selectedMember);
+            }}
+        }});
+
+        // Clear comparison button
+        document.getElementById('clearComparison').addEventListener('click', function() {{
+            const compareSelect = document.getElementById('compareSelect');
+            compareSelect.value = '';
+            const selectedMember = memberSelect.value;
+            if (selectedMember) {{
+                updateTimelineChart('individual', selectedMember);
+            }}
+        }});
+
+        function updateCompareOptions(excludeUsername) {{
+            const compareSelect = document.getElementById('compareSelect');
+            const memberSelect = document.getElementById('memberSelect');
+            
+            // Clear existing options except the first one
+            compareSelect.innerHTML = '<option value="">Select someone to compare...</option>';
+            
+            // Copy options from memberSelect, excluding the selected member
+            for (let i = 1; i < memberSelect.options.length; i++) {{
+                const option = memberSelect.options[i];
+                if (option.value !== excludeUsername) {{
+                    const newOption = new Option(option.text, option.value);
+                    compareSelect.appendChild(newOption);
+                }}
+            }}
+        }}
+
+        function updateTimelineChart(mode, username, compareUsername = null) {{
+            if (mode === 'compare' && username && compareUsername && individualData[username] && individualData[compareUsername]) {{
+                // Comparison mode - show two datasets
+                const userData1 = individualData[username];
+                const userData2 = individualData[compareUsername];
+                
+                // Get all dates from both users
+                const allDates = new Set([
+                    ...Object.keys(userData1.daily),
+                    ...Object.keys(userData2.daily)
+                ]);
+                const sortedDates = Array.from(allDates).sort();
+                
+                if (sortedDates.length === 0) return;
+                
+                const user1Data = [];
+                const user2Data = [];
+                
+                sortedDates.forEach(dateStr => {{
+                    user1Data.push({{
+                        x: dateStr,
+                        y: userData1.daily[dateStr] || 0
+                    }});
+                    user2Data.push({{
+                        x: dateStr,
+                        y: userData2.daily[dateStr] || 0
+                    }});
+                }});
+                
+                // Update chart with two datasets
+                timelineChart.data.datasets = [
+                    {{
+                        label: `${{userData1.name}} - Daily Contributions`,
+                        data: user1Data,
+                        borderColor: '#28a745',
+                        backgroundColor: 'rgba(40, 167, 69, 0.1)',
+                        fill: false,
+                        tension: 0.1
+                    }},
+                    {{
+                        label: `${{userData2.name}} - Daily Contributions`,
+                        data: user2Data,
+                        borderColor: '#dc3545',
+                        backgroundColor: 'rgba(220, 53, 69, 0.1)',
+                        fill: false,
+                        tension: 0.1
+                    }}
+                ];
+                
+            }} else if (mode === 'individual' && username && individualData[username]) {{
+                // Individual mode - single dataset
                 const userData = individualData[username];
                 const userDates = Object.keys(userData.daily).sort();
                 
@@ -738,36 +865,38 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                     return;
                 }}
                 
-                // Create complete date range for user with proper date objects
-                const startDate = new Date(userDates[0]);
-                const endDate = new Date(userDates[userDates.length - 1]);
                 const completeUserData = [];
-                
-                for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {{
-                    const dateStr = d.toISOString().split('T')[0];
+                userDates.forEach(dateStr => {{
                     completeUserData.push({{
                         x: dateStr,
                         y: userData.daily[dateStr] || 0
                     }});
-                }}
+                }});
                 
-                newData = completeUserData;
-                newLabel = `${{userData.name}} - Daily Contributions`;
-                newColor = '#28a745';
+                timelineChart.data.datasets = [{{
+                    label: `${{userData.name}} - Daily Contributions`,
+                    data: completeUserData,
+                    borderColor: '#28a745',
+                    backgroundColor: 'rgba(40, 167, 69, 0.1)',
+                    fill: false,
+                    tension: 0.1
+                }}];
+                
             }} else {{
-                // Use team data with proper x,y format
-                newData = timelineData.map(d => ({{
-                    x: d.date,
-                    y: d.total
-                }}));
-                newLabel = 'Team - Daily Contributions';
-                newColor = '#0366d6';
+                // Team mode - single dataset
+                timelineChart.data.datasets = [{{
+                    label: 'Team - Daily Contributions',
+                    data: timelineData.map(d => ({{
+                        x: d.date,
+                        y: d.total
+                    }})),
+                    borderColor: '#0366d6',
+                    backgroundColor: 'rgba(3, 102, 214, 0.1)',
+                    fill: false,
+                    tension: 0.1
+                }}];
             }}
             
-            timelineChart.data.datasets[0].data = newData;
-            timelineChart.data.datasets[0].label = newLabel;
-            timelineChart.data.datasets[0].borderColor = newColor;
-            timelineChart.data.datasets[0].backgroundColor = newColor.replace('#', 'rgba(').replace(')', ', 0.1)').replace('#0366d6', 'rgba(3, 102, 214, 0.1)').replace('#28a745', 'rgba(40, 167, 69, 0.1)');
             timelineChart.update();
         }}
 
