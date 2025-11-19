@@ -394,6 +394,14 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             align-items: center;
             margin-bottom: 20px;
         }}
+        
+        /* Make pie chart appear clickable */
+        #pieChart {{
+            cursor: pointer;
+        }}
+        #pieChart:hover {{
+            opacity: 0.9;
+        }}
     </style>
 </head>
 <body>
@@ -423,10 +431,6 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             <div class="stat-card">
                 <div class="stat-number">{sum(c.get('prs_created', 0) for c in contributors.values())}</div>
                 <div class="stat-label">PRs Created</div>
-            </div>
-            <div class="stat-card">
-                <div class="stat-number">{sum(c.get('prs_merged', 0) for c in contributors.values())}</div>
-                <div class="stat-label">PRs Merged</div>
             </div>
             <div class="stat-card">
                 <div class="stat-number">{sum(c.get('prs_reviewed', 0) for c in contributors.values())}</div>
@@ -524,9 +528,33 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                             }}
                         }}
                     }}
+                }},
+                onClick: function(event, elements) {{
+                    if (elements.length > 0) {{
+                        const clickedIndex = elements[0].index;
+                        
+                        // Get username from stored array (handles hidden users correctly)
+                        let clickedUsername = null;
+                        if (window.pieChart.usernames && window.pieChart.usernames[clickedIndex]) {{
+                            clickedUsername = window.pieChart.usernames[clickedIndex];
+                        }} else {{
+                            // Fallback to original pieData if usernames array not available
+                            const clickedData = pieData[clickedIndex];
+                            if (clickedData) {{
+                                clickedUsername = clickedData.username;
+                            }}
+                        }}
+                        
+                        if (clickedUsername) {{
+                            selectUserInTimeline(clickedUsername);
+                        }}
+                    }}
                 }}
             }}
         }});
+        
+        // Initialize usernames array for pie chart click handling
+        window.pieChart.usernames = pieData.map(d => d.username);
 
         // Timeline Chart
         const timelineCtx = document.getElementById('timelineChart').getContext('2d');
@@ -606,6 +634,25 @@ def generate_html_report(data, output_file="reports/github_report.html"):
         // Timeline filter functionality
         const allTeamButton = document.querySelector('.filter-button[data-filter="all"]');
         const memberSelect = document.getElementById('memberSelect');
+
+        // Function to select a user in the timeline (called from pie chart clicks)
+        function selectUserInTimeline(username) {{
+            // Set the dropdown to the selected user
+            memberSelect.value = username;
+            
+            // Update the timeline chart to show individual data
+            updateTimelineChart('individual', username);
+            
+            // Scroll to the timeline section smoothly
+            const timelineChart = document.getElementById('timelineChart');
+            const timelineSection = timelineChart.closest('.chart-section');
+            if (timelineSection) {{
+                timelineSection.scrollIntoView({{ 
+                    behavior: 'smooth', 
+                    block: 'start' 
+                }});
+            }}
+        }}
 
         // All Team button resets dropdown and shows team view
         allTeamButton.addEventListener('click', function() {{
@@ -801,24 +848,27 @@ def generate_html_report(data, output_file="reports/github_report.html"):
         
         function updateStatsCards() {{
             const visibleRows = document.querySelectorAll('.contributors-table tbody tr:not(.hidden-user)');
-            let totalContribs = 0, totalCommits = 0, totalPRs = 0, totalReviews = 0;
+            let totalContribs = 0, totalCommits = 0, totalPRsCreated = 0, totalReviews = 0;
             
             visibleRows.forEach(row => {{
-                totalContribs += parseInt(row.dataset.total) || 0;
-                totalCommits += parseInt(row.dataset.commits) || 0;
-                totalPRs += parseInt(row.dataset.prs) || 0;
-                totalReviews += parseInt(row.dataset.reviews) || 0;
+                const username = row.dataset.username;
+                const userData = pieData.find(item => item.username === username);
+                if (userData) {{
+                    totalContribs += userData.commits + userData.prs_created + userData.prs_merged + userData.prs_reviewed;
+                    totalCommits += userData.commits;
+                    totalPRsCreated += userData.prs_created;
+                    totalReviews += userData.prs_reviewed;
+                }}
             }});
             
-            // Update stat cards
+            // Update stat cards (now 5 cards instead of 6)
             const statCards = document.querySelectorAll('.stat-card .stat-number');
-            if (statCards.length >= 6) {{
+            if (statCards.length >= 5) {{
                 statCards[0].textContent = visibleRows.length; // Active Contributors
                 statCards[1].textContent = totalContribs.toLocaleString(); // Total Contributions
                 statCards[2].textContent = totalCommits.toLocaleString(); // Commits
-                statCards[3].textContent = 'N/A'; // PRs Created (we don't have separate data)
-                statCards[4].textContent = 'N/A'; // PRs Merged (we don't have separate data)
-                statCards[5].textContent = totalReviews.toLocaleString(); // PR Reviews
+                statCards[3].textContent = totalPRsCreated.toLocaleString(); // PRs Created
+                statCards[4].textContent = totalReviews.toLocaleString(); // PR Reviews
             }}
         }}
         
@@ -835,6 +885,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             const newLabels = [];
             const newData = [];
             const newColors = [];
+            const newUsernames = []; // Store usernames for click handling
             
             visibleRows.forEach((row, index) => {{
                 const username = row.dataset.username;
@@ -847,6 +898,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                 newLabels.push(displayName);
                 newData.push(userTotal);
                 newColors.push(originalData ? originalData.color : pieData[index % pieData.length].color);
+                newUsernames.push(username);
             }});
             
             // Update the pie chart
@@ -854,6 +906,8 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                 window.pieChart.data.labels = newLabels;
                 window.pieChart.data.datasets[0].data = newData;
                 window.pieChart.data.datasets[0].backgroundColor = newColors;
+                // Store usernames for click handling
+                window.pieChart.usernames = newUsernames;
                 window.pieChart.update();
             }}
         }}
