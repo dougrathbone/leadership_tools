@@ -9,17 +9,36 @@ import time
 import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
+import signal
+import pickle
 
 def handle_rate_limit(func, *args, **kwargs):
     """
-    Wrapper function to handle GitHub API rate limiting with exponential backoff
+    Wrapper function to handle GitHub API rate limiting with exponential backoff and timeouts
     """
     max_retries = 5
     base_delay = 1
+    timeout_seconds = 30  # 30 second timeout for requests
     
     for attempt in range(max_retries):
         try:
-            return func(*args, **kwargs)
+            # Set timeout for the request if it's a GitHub API call
+            if hasattr(func, '__self__') and hasattr(func.__self__, '_requester'):
+                # This is a PyGithub method, set timeout on the underlying requester
+                original_timeout = getattr(func.__self__._requester, '_timeout', None)
+                func.__self__._requester._timeout = timeout_seconds
+            
+            result = func(*args, **kwargs)
+            
+            # Restore original timeout
+            if hasattr(func, '__self__') and hasattr(func.__self__, '_requester'):
+                if original_timeout is not None:
+                    func.__self__._requester._timeout = original_timeout
+                else:
+                    delattr(func.__self__._requester, '_timeout')
+            
+            return result
+            
         except RateLimitExceededException as e:
             if attempt == max_retries - 1:
                 print(f"Rate limit exceeded after {max_retries} attempts. Exiting.")
@@ -29,9 +48,20 @@ def handle_rate_limit(func, *args, **kwargs):
             delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
             print(f"Rate limit exceeded. Retrying in {delay:.2f} seconds... (attempt {attempt + 1}/{max_retries})")
             time.sleep(delay)
+            
         except Exception as e:
-            # For other exceptions, don't retry
-            raise e
+            # Handle timeouts and connection errors with retry
+            if any(keyword in str(e).lower() for keyword in ['timeout', 'connection', 'network', 'read timed out']):
+                if attempt == max_retries - 1:
+                    print(f"Network/timeout error after {max_retries} attempts: {str(e)}")
+                    raise e
+                
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
+                print(f"Network/timeout error. Retrying in {delay:.2f} seconds... (attempt {attempt + 1}/{max_retries}): {str(e)}")
+                time.sleep(delay)
+            else:
+                # For other exceptions, don't retry
+                raise e
 
 def fetch_contributor_commits(repo, contributor, start_date):
     """
@@ -43,6 +73,75 @@ def fetch_contributor_commits(repo, contributor, start_date):
     except Exception as e:
         print(f"Error fetching commits for {contributor.login}: {str(e)}")
         return contributor.login, []
+
+def save_state(state_data, filename="reports/scan_state.pkl"):
+    """
+    Save the current state to a pickle file
+    """
+    try:
+        os.makedirs("reports", exist_ok=True)
+        with open(filename, 'wb') as f:
+            pickle.dump(state_data, f)
+        print(f"State saved to {filename}")
+    except Exception as e:
+        print(f"Error saving state: {str(e)}")
+
+def load_state(filename="reports/scan_state.pkl"):
+    """
+    Load state from a pickle file
+    """
+    try:
+        if os.path.exists(filename):
+            with open(filename, 'rb') as f:
+                state_data = pickle.load(f)
+            print(f"State loaded from {filename}")
+            return state_data
+        return None
+    except Exception as e:
+        print(f"Error loading state: {str(e)}")
+        return None
+
+def save_progress_data(total_contributions, user_profiles, daily_contributions, repo_contributions, 
+                      organization, start_date, processed_repos):
+    """
+    Save current progress data to JSON files
+    """
+    try:
+        os.makedirs("reports", exist_ok=True)
+        
+        # Save comprehensive data as JSON
+        comprehensive_data = {
+            "organization": organization,
+            "start_date": start_date.isoformat(),
+            "end_date": datetime.now(timezone.utc).isoformat(),
+            "processed_repositories": processed_repos,
+            "contributors": dict(total_contributions),
+            "user_profiles": user_profiles,
+            "daily_contributions": {
+                user: {date: dict(metrics) for date, metrics in days.items()} 
+                for user, days in daily_contributions.items()
+            },
+            "repo_contributions": {
+                user: {repo: dict(metrics) for repo, metrics in repos.items()} 
+                for user, repos in repo_contributions.items()
+            }
+        }
+        
+        # Save JSON data
+        with open("reports/contributions_data.json", "w") as file:
+            json.dump(comprehensive_data, file, indent=2, default=str)
+        
+        # Save CSV data
+        sorted_contributions = sorted(total_contributions.items(), key=lambda x: x[1]["total_contributions"], reverse=True)
+        with open("output.csv", "w") as file:
+            file.write("Username,Name,Commits,PRs Created,PRs Merged,PR Reviews,Total Contributions\n")
+            for username, data in sorted_contributions:
+                file.write(f"{username},{data['name']},{data['commits']},{data['prs_created']},{data['prs_merged']},{data['prs_reviewed']},{data['total_contributions']}\n")
+        
+        print("Progress data saved to output.csv and reports/contributions_data.json")
+        
+    except Exception as e:
+        print(f"Error saving progress data: {str(e)}")
 
 # Get GitHub personal access token from environment variable or prompt
 access_token = os.getenv('GITHUB_TOKEN')
@@ -103,11 +202,44 @@ except (EOFError, KeyboardInterrupt):
     print(f"Using default start date: {start_date_str}")
     start_date = default_start_date
 
+# Check for existing state and offer to resume
+existing_state = load_state()
+resume_from_state = False
+processed_repo_names = set()
+
+if existing_state:
+    print(f"\nFound existing scan state from previous run:")
+    print(f"  Organization: {existing_state.get('organization', 'N/A')}")
+    print(f"  Start date: {existing_state.get('start_date', 'N/A')}")
+    print(f"  Processed repositories: {len(existing_state.get('processed_repos', []))}")
+    
+    try:
+        resume_choice = input("Resume from previous state? (y/n): ").lower().strip()
+        if resume_choice == 'y':
+            resume_from_state = True
+            processed_repo_names = set(existing_state.get('processed_repos', []))
+            # Restore data structures
+            total_contributions.update(existing_state.get('total_contributions', {}))
+            user_profiles.update(existing_state.get('user_profiles', {}))
+            daily_contributions.update(existing_state.get('daily_contributions', {}))
+            repo_contributions.update(existing_state.get('repo_contributions', {}))
+            print(f"Resuming scan, skipping {len(processed_repo_names)} already processed repositories...")
+    except (EOFError, KeyboardInterrupt):
+        print("Continuing with fresh scan...")
+
 # Get the list of repositories with explicit pagination handling
 print("Fetching repository list...")
 repos = handle_rate_limit(org.get_repos, type='all', sort='updated', direction='desc')
 repos_list = list(repos)  # This forces PyGithub to fetch all pages
 total_repos = len(repos_list)
+
+# Filter out already processed repositories if resuming
+if resume_from_state:
+    original_count = len(repos_list)
+    repos_list = [repo for repo in repos_list if repo.full_name not in processed_repo_names]
+    skipped_count = original_count - len(repos_list)
+    print(f"Skipped {skipped_count} already processed repositories")
+    total_repos = len(repos_list)
 
 print(f"Found {total_repos} repositories in the {ORG_NAME} organization")
 print("Repository names (sorted by most recently updated):")
@@ -127,6 +259,38 @@ print("Press Ctrl+C to stop gracefully at any time...\n")
 
 # Track timing for progress estimation
 scan_start_time = time.time()
+processed_repos = list(processed_repo_names) if resume_from_state else []
+
+# Set up signal handler for graceful shutdown
+def signal_handler(signum, frame):
+    print(f"\n\nReceived interrupt signal. Saving current state...")
+    
+    # Save current state
+    current_state = {
+        "organization": ORG_NAME,
+        "start_date": start_date.isoformat(),
+        "processed_repos": processed_repos,
+        "total_contributions": dict(total_contributions),
+        "user_profiles": user_profiles,
+        "daily_contributions": {
+            user: {date: dict(metrics) for date, metrics in days.items()} 
+            for user, days in daily_contributions.items()
+        },
+        "repo_contributions": {
+            user: {repo: dict(metrics) for repo, metrics in repos.items()} 
+            for user, repos in repo_contributions.items()
+        }
+    }
+    save_state(current_state)
+    
+    # Save progress data
+    save_progress_data(total_contributions, user_profiles, daily_contributions, 
+                      repo_contributions, ORG_NAME, start_date, processed_repos)
+    
+    print("State and progress saved. You can resume by running the script again.")
+    exit(0)
+
+signal.signal(signal.SIGINT, signal_handler)
 
 # Loop through all repositories in the organization
 try:
@@ -207,11 +371,14 @@ try:
                 
                 # Store user profile info
                 if username not in user_profiles:
+                    # Try to get email from contributor object
+                    email = getattr(contributor, 'email', None)
                     user_profiles[username] = {
                         "name": name,
                         "login": username,
                         "avatar_url": contributor.avatar_url,
-                        "html_url": contributor.html_url
+                        "html_url": contributor.html_url,
+                        "email": email
                     }
                 
                 # Get commits from cached data
@@ -270,6 +437,31 @@ try:
             active_contributors = len([u for u in total_contributions if total_contributions[u]['total_contributions'] > 0])
             print(f"   ✓ Repository completed. Active contributors found: {active_contributors}")
             
+            # Add this repository to processed list
+            processed_repos.append(repo_name)
+            
+            # Save state after each repository (progressive saving)
+            current_state = {
+                "organization": ORG_NAME,
+                "start_date": start_date.isoformat(),
+                "processed_repos": processed_repos,
+                "total_contributions": dict(total_contributions),
+                "user_profiles": user_profiles,
+                "daily_contributions": {
+                    user: {date: dict(metrics) for date, metrics in days.items()} 
+                    for user, days in daily_contributions.items()
+                },
+                "repo_contributions": {
+                    user: {repo: dict(metrics) for repo, metrics in repos.items()} 
+                    for user, repos in repo_contributions.items()
+                }
+            }
+            save_state(current_state)
+            
+            # Save progress data after each repository
+            save_progress_data(total_contributions, user_profiles, daily_contributions, 
+                              repo_contributions, ORG_NAME, start_date, processed_repos)
+            
             # Calculate estimated time remaining
             elapsed_time = time.time() - scan_start_time
             if idx > 1:  # Only show ETA after processing at least 2 repos
@@ -296,42 +488,24 @@ try:
                 print(f"Error processing repository: {str(e)}")
 
 except KeyboardInterrupt:
-    print(f"\n\nGracefully stopping... Processed {idx-1} of {total_repos} repositories.")
-    print("Generating report with data collected so far...")
+    print(f"\n\nGracefully stopping... Processed {len(processed_repos)} repositories.")
+    print("Final state and data already saved during processing.")
 
-# Sort the contributions in descending order by total contributions
-sorted_contributions = sorted(total_contributions.items(), key=lambda x: x[1]["total_contributions"], reverse=True)
+# Final save of all data
+print(f"\nScan completed! Processed {len(processed_repos)} repositories.")
 
-# Save the CSV output
-with open("output.csv", "w") as file:
-    file.write("Username,Name,Commits,PRs Created,PRs Merged,PR Reviews,Total Contributions\n")
-    for username, data in sorted_contributions:
-        file.write(f"{username},{data['name']},{data['commits']},{data['prs_created']},{data['prs_merged']},{data['prs_reviewed']},{data['total_contributions']}\n")
+# Save final progress data
+save_progress_data(total_contributions, user_profiles, daily_contributions, 
+                  repo_contributions, ORG_NAME, start_date, processed_repos)
 
-# Save comprehensive data as JSON for report generation
-comprehensive_data = {
-    "organization": ORG_NAME,
-    "start_date": start_date.isoformat(),
-    "end_date": datetime.now().isoformat(),
-    "total_repositories": total_repos,
-    "contributors": dict(total_contributions),
-    "user_profiles": user_profiles,
-    "daily_contributions": {
-        user: {date: dict(metrics) for date, metrics in days.items()} 
-        for user, days in daily_contributions.items()
-    },
-    "repo_contributions": {
-        user: {repo: dict(metrics) for repo, metrics in repos.items()} 
-        for user, repos in repo_contributions.items()
-    }
-}
+# Clean up state file since scan is complete
+try:
+    if os.path.exists("reports/scan_state.pkl"):
+        os.remove("reports/scan_state.pkl")
+        print("Cleaned up temporary state file.")
+except:
+    pass
 
-# Create reports directory if it doesn't exist
-os.makedirs("reports", exist_ok=True)
-
-# Save JSON data
-with open("reports/contributions_data.json", "w") as file:
-    json.dump(comprehensive_data, file, indent=2, default=str)
-
-print("\nOutput saved to output.csv")
+print("\nScan completed successfully!")
+print("Output saved to output.csv")
 print("Comprehensive data saved to reports/contributions_data.json")
