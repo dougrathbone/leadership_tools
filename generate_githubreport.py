@@ -500,6 +500,48 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             </div>
         </div>
 
+        <div class="chart-section">
+            <h2>Contribution Distribution Analysis</h2>
+            <p>Distribution charts showing the spread of contributions across team members. Outliers are highlighted to identify exceptional contributors.</p>
+            
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-bottom: 30px;">
+                <div>
+                    <h3 style="margin-bottom: 15px; color: #24292e;">Total Contributions</h3>
+                    <div class="chart-container" style="height: 300px;">
+                        <canvas id="totalDistributionChart"></canvas>
+                    </div>
+                </div>
+                <div>
+                    <h3 style="margin-bottom: 15px; color: #24292e;">Commits</h3>
+                    <div class="chart-container" style="height: 300px;">
+                        <canvas id="commitsDistributionChart"></canvas>
+                    </div>
+                </div>
+            </div>
+            
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px;">
+                <div>
+                    <h3 style="margin-bottom: 15px; color: #24292e;">Pull Requests</h3>
+                    <div class="chart-container" style="height: 300px;">
+                        <canvas id="prsDistributionChart"></canvas>
+                    </div>
+                </div>
+                <div>
+                    <h3 style="margin-bottom: 15px; color: #24292e;">PR Reviews</h3>
+                    <div class="chart-container" style="height: 300px;">
+                        <canvas id="reviewsDistributionChart"></canvas>
+                    </div>
+                </div>
+            </div>
+            
+            <div style="margin-top: 20px; padding: 15px; background-color: #f8f9fa; border-radius: 6px; border-left: 4px solid #0366d6;">
+                <h4 style="margin: 0 0 10px 0; color: #24292e;">Statistical Summary</h4>
+                <div id="statisticalSummary" style="font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace; font-size: 14px;">
+                    <!-- Statistical data will be populated by JavaScript -->
+                </div>
+            </div>
+        </div>
+
     </div>
 
     <script>
@@ -809,6 +851,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             updateUserVisibility();
             recalculateStats();
             updatePieChart();
+            updateDistributionCharts();
         }}
         
         function showAllUsers() {{
@@ -817,6 +860,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             updateUserVisibility();
             recalculateStats();
             updatePieChart();
+            updateDistributionCharts();
         }}
         
         function updateUserVisibility() {{
@@ -938,7 +982,257 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             updateUserVisibility();
             recalculateStats();
             updatePieChart();
+            createDistributionCharts();
         }});
+
+        // Distribution Charts Functions
+        function calculateStatistics(values) {{
+            const sorted = values.slice().sort((a, b) => a - b);
+            const n = sorted.length;
+            const mean = values.reduce((sum, val) => sum + val, 0) / n;
+            const median = n % 2 === 0 ? (sorted[n/2 - 1] + sorted[n/2]) / 2 : sorted[Math.floor(n/2)];
+            
+            // Calculate standard deviation
+            const variance = values.reduce((sum, val) => sum + Math.pow(val - mean, 2), 0) / n;
+            const stdDev = Math.sqrt(variance);
+            
+            // Calculate quartiles
+            const q1 = sorted[Math.floor(n * 0.25)];
+            const q3 = sorted[Math.floor(n * 0.75)];
+            const iqr = q3 - q1;
+            
+            // Identify outliers (values beyond 1.5 * IQR from quartiles)
+            const lowerBound = q1 - 1.5 * iqr;
+            const upperBound = q3 + 1.5 * iqr;
+            const outliers = values.filter(val => val < lowerBound || val > upperBound);
+            
+            return {{
+                mean: mean,
+                median: median,
+                stdDev: stdDev,
+                min: Math.min(...values),
+                max: Math.max(...values),
+                q1: q1,
+                q3: q3,
+                outliers: outliers,
+                lowerBound: lowerBound,
+                upperBound: upperBound
+            }};
+        }}
+
+        function createHistogramData(values, bins = 10, contributors = null, metricName = '') {{
+            const stats = calculateStatistics(values);
+            const min = stats.min;
+            const max = stats.max;
+            const binWidth = (max - min) / bins;
+            
+            const binCounts = new Array(bins).fill(0);
+            const binLabels = [];
+            const binColors = [];
+            const binContributors = new Array(bins).fill(null).map(() => []);
+            
+            // Create bin labels and initialize colors
+            for (let i = 0; i < bins; i++) {{
+                const binStart = min + i * binWidth;
+                const binEnd = min + (i + 1) * binWidth;
+                binLabels.push(`${{Math.round(binStart)}}-${{Math.round(binEnd)}}`);
+                binColors.push('rgba(54, 162, 235, 0.6)');
+            }}
+            
+            // Count values in each bin and track contributors
+            values.forEach((value, index) => {{
+                let binIndex = Math.floor((value - min) / binWidth);
+                if (binIndex >= bins) binIndex = bins - 1; // Handle edge case for max value
+                binCounts[binIndex]++;
+                
+                // Add contributor info to this bin
+                if (contributors && contributors[index]) {{
+                    binContributors[binIndex].push({{
+                        name: contributors[index].label,
+                        value: value,
+                        metricName: metricName
+                    }});
+                }}
+            }});
+            
+            // Highlight outlier bins
+            values.forEach(value => {{
+                if (value < stats.lowerBound || value > stats.upperBound) {{
+                    let binIndex = Math.floor((value - min) / binWidth);
+                    if (binIndex >= bins) binIndex = bins - 1;
+                    binColors[binIndex] = 'rgba(255, 99, 132, 0.6)'; // Red for outliers
+                }}
+            }});
+            
+            return {{
+                labels: binLabels,
+                data: binCounts,
+                colors: binColors,
+                contributors: binContributors,
+                stats: stats
+            }};
+        }}
+
+        function createDistributionChart(canvasId, data, title, metricName, contributors = null) {{
+            const ctx = document.getElementById(canvasId).getContext('2d');
+            const contributorsData = contributors || pieData;
+            const histogramData = createHistogramData(data, 10, contributorsData, metricName);
+            
+            return new Chart(ctx, {{
+                type: 'bar',
+                data: {{
+                    labels: histogramData.labels,
+                    datasets: [{{
+                        label: 'Number of Contributors',
+                        data: histogramData.data,
+                        backgroundColor: histogramData.colors,
+                        borderColor: histogramData.colors.map(color => color.replace('0.6', '1')),
+                        borderWidth: 1
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {{
+                        title: {{
+                            display: true,
+                            text: title + ' Distribution'
+                        }},
+                        legend: {{
+                            display: false
+                        }},
+                        tooltip: {{
+                            callbacks: {{
+                                title: function(context) {{
+                                    return `${{title}} Range: ${{context[0].label}}`;
+                                }},
+                                label: function(context) {{
+                                    return `Contributors: ${{context.parsed.y}}`;
+                                }},
+                                afterBody: function(context) {{
+                                    const binIndex = context[0].dataIndex;
+                                    const contributors = histogramData.contributors[binIndex];
+                                    const stats = histogramData.stats;
+                                    
+                                    let result = [
+                                        '',
+                                        `Mean: ${{stats.mean.toFixed(1)}}`,
+                                        `Median: ${{stats.median.toFixed(1)}}`
+                                    ];
+                                    
+                                    if (contributors && contributors.length > 0) {{
+                                        result.push('');
+                                        // Sort contributors by value in descending order (highest to lowest)
+                                        const sortedContributors = contributors.slice().sort((a, b) => b.value - a.value);
+                                        sortedContributors.forEach(contributor => {{
+                                            result.push(`${{contributor.name}} - ${{contributor.value}} ${{metricName}}`);
+                                        }});
+                                    }}
+                                    
+                                    return result;
+                                }}
+                            }}
+                        }}
+                    }},
+                    scales: {{
+                        y: {{
+                            beginAtZero: true,
+                            title: {{
+                                display: true,
+                                text: 'Number of Contributors'
+                            }}
+                        }},
+                        x: {{
+                            title: {{
+                                display: true,
+                                text: title + ' Range'
+                            }}
+                        }}
+                    }}
+                }}
+            }});
+        }}
+
+        function updateStatisticalSummary() {{
+            const visibleData = getVisiblePieData();
+            const totalContributions = visibleData.map(d => d.value);
+            const commits = visibleData.map(d => d.commits);
+            const prs = visibleData.map(d => d.prs_created + d.prs_merged);
+            const reviews = visibleData.map(d => d.prs_reviewed);
+            
+            const totalStats = calculateStatistics(totalContributions);
+            const commitStats = calculateStatistics(commits);
+            const prStats = calculateStatistics(prs);
+            const reviewStats = calculateStatistics(reviews);
+            
+            const summaryHtml = `
+                <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px;">
+                    <div>
+                        <strong>Total Contributions</strong><br>
+                        Mean: ${{totalStats.mean.toFixed(1)}}<br>
+                        Median: ${{totalStats.median.toFixed(1)}}<br>
+                        Std Dev: ${{totalStats.stdDev.toFixed(1)}}<br>
+                        Outliers: ${{totalStats.outliers.length}}
+                    </div>
+                    <div>
+                        <strong>Commits</strong><br>
+                        Mean: ${{commitStats.mean.toFixed(1)}}<br>
+                        Median: ${{commitStats.median.toFixed(1)}}<br>
+                        Std Dev: ${{commitStats.stdDev.toFixed(1)}}<br>
+                        Outliers: ${{commitStats.outliers.length}}
+                    </div>
+                    <div>
+                        <strong>Pull Requests</strong><br>
+                        Mean: ${{prStats.mean.toFixed(1)}}<br>
+                        Median: ${{prStats.median.toFixed(1)}}<br>
+                        Std Dev: ${{prStats.stdDev.toFixed(1)}}<br>
+                        Outliers: ${{prStats.outliers.length}}
+                    </div>
+                    <div>
+                        <strong>PR Reviews</strong><br>
+                        Mean: ${{reviewStats.mean.toFixed(1)}}<br>
+                        Median: ${{reviewStats.median.toFixed(1)}}<br>
+                        Std Dev: ${{reviewStats.stdDev.toFixed(1)}}<br>
+                        Outliers: ${{reviewStats.outliers.length}}
+                    </div>
+                </div>
+            `;
+            
+            document.getElementById('statisticalSummary').innerHTML = summaryHtml;
+        }}
+
+        function getVisiblePieData() {{
+            return pieData.filter(d => !hiddenUsers.includes(d.username));
+        }}
+
+        function createDistributionCharts() {{
+            updateDistributionCharts();
+        }}
+
+        function updateDistributionCharts() {{
+            const visibleData = getVisiblePieData();
+            
+            // Extract data for each metric from visible users only
+            const totalContributions = visibleData.map(d => d.value);
+            const commits = visibleData.map(d => d.commits);
+            const prs = visibleData.map(d => d.prs_created + d.prs_merged);
+            const reviews = visibleData.map(d => d.prs_reviewed);
+            
+            // Destroy existing charts if they exist
+            if (window.totalDistChart) window.totalDistChart.destroy();
+            if (window.commitsDistChart) window.commitsDistChart.destroy();
+            if (window.prsDistChart) window.prsDistChart.destroy();
+            if (window.reviewsDistChart) window.reviewsDistChart.destroy();
+            
+            // Create distribution charts with visible data
+            window.totalDistChart = createDistributionChart('totalDistributionChart', totalContributions, 'Total Contributions', 'contributions', visibleData);
+            window.commitsDistChart = createDistributionChart('commitsDistributionChart', commits, 'Commits', 'commits', visibleData);
+            window.prsDistChart = createDistributionChart('prsDistributionChart', prs, 'Pull Requests', 'PRs', visibleData);
+            window.reviewsDistChart = createDistributionChart('reviewsDistributionChart', reviews, 'PR Reviews', 'reviews', visibleData);
+            
+            // Update statistical summary
+            updateStatisticalSummary();
+        }}
     </script>
 </body>
 </html>
