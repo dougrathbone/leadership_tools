@@ -364,9 +364,10 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             transition: all 0.2s;
             opacity: 0;
             position: absolute;
-            right: 10px;
+            right: 5px;
             top: 50%;
             transform: translateY(-50%);
+            z-index: 10;
         }}
         .hide-user-btn:hover {{
             background: #c82333;
@@ -375,6 +376,9 @@ def generate_html_report(data, output_file="reports/github_report.html"):
         .contributors-table tr {{
             position: relative;
             cursor: pointer;
+        }}
+        .contributors-table td:last-child {{
+            position: relative;
         }}
         .contributors-table tr:hover {{
             background-color: #f8f9fa;
@@ -990,8 +994,8 @@ def generate_contributors_table(sorted_contributors, total_contributions_count, 
                     <div class="percentage-bar">
                         <div class="percentage-fill" style="width: {percentage}%"></div>
                     </div>
+                    <button class="hide-user-btn" onclick="event.stopPropagation(); toggleUserVisibility('{username}')" title="Hide this user">−</button>
                 </td>
-                <button class="hide-user-btn" onclick="event.stopPropagation(); toggleUserVisibility('{username}')" title="Hide this user">−</button>
             </tr>
         """
     return table_html
