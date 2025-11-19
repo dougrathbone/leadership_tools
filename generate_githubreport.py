@@ -1079,15 +1079,21 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             const histogramData = createHistogramData(data, 10, contributorsData, metricName);
             
             return new Chart(ctx, {{
-                type: 'bar',
+                type: 'line',
                 data: {{
                     labels: histogramData.labels,
                     datasets: [{{
                         label: 'Number of Contributors',
                         data: histogramData.data,
-                        backgroundColor: histogramData.colors,
-                        borderColor: histogramData.colors.map(color => color.replace('0.6', '1')),
-                        borderWidth: 1
+                        backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                        borderColor: 'rgba(54, 162, 235, 1)',
+                        borderWidth: 2,
+                        fill: true,
+                        tension: 0.4,
+                        pointBackgroundColor: histogramData.colors.map(color => color.replace('0.6', '1')),
+                        pointBorderColor: histogramData.colors.map(color => color.replace('0.6', '1')),
+                        pointRadius: 4,
+                        pointHoverRadius: 6
                     }}]
                 }},
                 options: {{
@@ -1102,6 +1108,8 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                             display: false
                         }},
                         tooltip: {{
+                            mode: 'point',
+                            intersect: false,
                             callbacks: {{
                                 title: function(context) {{
                                     return `${{title}} Range: ${{context[0].label}}`;
