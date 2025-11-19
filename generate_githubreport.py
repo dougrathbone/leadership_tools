@@ -562,6 +562,14 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             </div>
         </div>
 
+        <div class="chart-section">
+            <h2>Collaboration Health</h2>
+            <p>Analyze the balance between code creation (PRs Created) and team support (PR Reviews). Ideal contributors appear in the top-right or along the diagonal.</p>
+            <div class="chart-container" style="height: 500px;">
+                <canvas id="reviewerRatioChart"></canvas>
+            </div>
+        </div>
+
     </div>
 
     <script>
@@ -981,8 +989,9 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             recalculateStats();
             updatePieChart();
             updateDistributionCharts();
+            createReviewerRatioChart();
         }}
-        
+
         function showAllUsers() {{
             hiddenUsers = [];
             localStorage.setItem('hiddenUsers', JSON.stringify(hiddenUsers));
@@ -990,6 +999,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             recalculateStats();
             updatePieChart();
             updateDistributionCharts();
+            createReviewerRatioChart();
         }}
         
         function updateUserVisibility() {{
@@ -1112,6 +1122,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             recalculateStats();
             updatePieChart();
             createDistributionCharts();
+            createReviewerRatioChart();
         }});
 
         // Distribution Charts Functions
@@ -1369,6 +1380,104 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             
             // Update statistical summary
             updateStatisticalSummary();
+        }}
+
+        function createReviewerRatioChart() {{
+            const ctx = document.getElementById('reviewerRatioChart').getContext('2d');
+            const visibleData = getVisiblePieData();
+            
+            // Destroy existing chart
+            if (window.reviewerRatioChartInstance && typeof window.reviewerRatioChartInstance.destroy === 'function') {{
+                window.reviewerRatioChartInstance.destroy();
+            }}
+
+            // Prepare data
+            const scatterData = visibleData.map(d => ({{
+                x: d.prs_created,
+                y: d.prs_reviewed,
+                label: d.label, // Name
+                username: d.username,
+                total: d.value // Total contributions
+            }}));
+
+            // Calculate max values for axis scaling and diagonal line
+            if (scatterData.length === 0) return;
+            
+            const maxX = Math.max(...scatterData.map(d => d.x), 10);
+            const maxY = Math.max(...scatterData.map(d => d.y), 10);
+            const maxVal = Math.max(maxX, maxY) * 1.1; // Add some padding
+
+            window.reviewerRatioChartInstance = new Chart(ctx, {{
+                type: 'scatter',
+                data: {{
+                    datasets: [{{
+                        label: 'Team Members',
+                        data: scatterData,
+                        backgroundColor: 'rgba(54, 162, 235, 0.6)',
+                        borderColor: 'rgba(54, 162, 235, 1)',
+                        borderWidth: 1,
+                        pointRadius: 6,
+                        pointHoverRadius: 8
+                    }}, {{
+                        type: 'line',
+                        label: '1:1 Ratio',
+                        data: [{{x: 0, y: 0}}, {{x: maxVal, y: maxVal}}],
+                        borderColor: 'rgba(150, 150, 150, 0.4)',
+                        borderWidth: 1,
+                        borderDash: [5, 5],
+                        pointRadius: 0,
+                        fill: false,
+                        tooltip: {{ enabled: false }} // Disable tooltip for the line
+                    }}]
+                }},
+                options: {{
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {{
+                        x: {{
+                            title: {{
+                                display: true,
+                                text: 'PRs Created (Code Output)'
+                            }},
+                            beginAtZero: true,
+                            max: maxVal
+                        }},
+                        y: {{
+                            title: {{
+                                display: true,
+                                text: 'PR Reviews (Team Support)'
+                            }},
+                            beginAtZero: true,
+                            max: maxVal
+                        }}
+                    }},
+                    plugins: {{
+                        title: {{
+                            display: true,
+                            text: 'Reviewer Ratio (Created vs Reviewed)'
+                        }},
+                        tooltip: {{
+                            callbacks: {{
+                                label: function(context) {{
+                                    if (context.dataset.type === 'line' || !context.raw.label) return null;
+                                    const d = context.raw;
+                                    const ratio = d.x > 0 ? (d.y / d.x).toFixed(1) : d.y;
+                                    return `${{d.label}}: Created ${{d.x}}, Reviewed ${{d.y}} (Ratio: ${{ratio}})`;
+                                }}
+                            }}
+                        }}
+                    }},
+                    onClick: function(event, elements) {{
+                        if (elements.length > 0 && elements[0].datasetIndex === 0) {{
+                            const index = elements[0].index;
+                            const d = scatterData[index];
+                            if (d && d.username) {{
+                                selectUserInTimeline(d.username);
+                            }}
+                        }}
+                    }}
+                }}
+            }});
         }}
     </script>
 </body>
