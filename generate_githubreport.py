@@ -358,16 +358,26 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             height: 20px;
             font-size: 12px;
             cursor: pointer;
-            margin-left: 8px;
             display: inline-flex;
             align-items: center;
             justify-content: center;
             transition: all 0.2s;
             opacity: 0;
+            position: absolute;
+            right: 10px;
+            top: 50%;
+            transform: translateY(-50%);
         }}
         .hide-user-btn:hover {{
             background: #c82333;
-            transform: scale(1.1);
+            transform: translateY(-50%) scale(1.1);
+        }}
+        .contributors-table tr {{
+            position: relative;
+            cursor: pointer;
+        }}
+        .contributors-table tr:hover {{
+            background-color: #f8f9fa;
         }}
         .contributors-table tr:hover .hide-user-btn {{
             opacity: 1;
@@ -961,13 +971,14 @@ def generate_contributors_table(sorted_contributors, total_contributions_count, 
         elif username != display_name.rstrip('@'):
             tooltip_text = f"GitHub: @{username}"
         
-        # Create name cell with tooltip and hide button
+        # Create name cell with tooltip (no hide button here)
         name_content = f'<span class="tooltip" data-tooltip="{tooltip_text}">{display_name}</span>' if tooltip_text else display_name
-        name_cell = f'<strong>{name_content}<button class="hide-user-btn" onclick="toggleUserVisibility(\'{username}\')" title="Hide this user">−</button></strong>'
+        name_cell = f'<strong>{name_content}</strong>'
         
         table_html += f"""
             <tr data-username="{username}" data-rank="{rank}" data-name="{display_name}" data-total="{contrib_data['total_contributions']}" 
-                data-commits="{commits}" data-prs="{prs_created + prs_merged}" data-reviews="{prs_reviewed}" data-percentage="{percentage:.1f}">
+                data-commits="{commits}" data-prs="{prs_created + prs_merged}" data-reviews="{prs_reviewed}" data-percentage="{percentage:.1f}"
+                onclick="selectUserInTimeline('{username}')" title="Click to view individual timeline">
                 <td><span style="color: {rank_color}; font-weight: bold;">#{rank}</span></td>
                 <td>{name_cell}</td>
                 <td>{contrib_data['total_contributions']:,}</td>
@@ -980,6 +991,7 @@ def generate_contributors_table(sorted_contributors, total_contributions_count, 
                         <div class="percentage-fill" style="width: {percentage}%"></div>
                     </div>
                 </td>
+                <button class="hide-user-btn" onclick="event.stopPropagation(); toggleUserVisibility('{username}')" title="Hide this user">−</button>
             </tr>
         """
     return table_html
