@@ -14,6 +14,30 @@ def load_contributions_data(data_file="reports/contributions_data.json"):
     with open(data_file, 'r') as f:
         return json.load(f)
 
+def improve_display_name(name, email, username):
+    """
+    Improve display name by extracting from email if name is N/A.
+    
+    Args:
+        name: The original name (might be "N/A")
+        email: Email address (might be None)
+        username: GitHub username as fallback
+    
+    Returns:
+        Improved display name
+    """
+    if name and name != "N/A":
+        return name
+    
+    # If we have an email, extract the part before @
+    if email and "@" in email:
+        email_prefix = email.split("@")[0]
+        # Capitalize first letter and return with @ suffix to indicate it's from email
+        return f"{email_prefix}@"
+    
+    # Fallback to username with @ suffix to indicate it's a username
+    return f"{username}@"
+
 def generate_html_report(data, output_file="reports/github_report.html"):
     """Generate an interactive HTML report."""
     
@@ -23,22 +47,32 @@ def generate_html_report(data, output_file="reports/github_report.html"):
     user_profiles = data['user_profiles']
     
     # Sort contributors by total contributions
-    sorted_contributors = sorted(contributors.items(), key=lambda x: x[1]['contributions'], reverse=True)
+    sorted_contributors = sorted(contributors.items(), key=lambda x: x[1]['total_contributions'], reverse=True)
     
     # Calculate total contributions for percentage calculations
-    total_contributions_count = sum(c['contributions'] for c in contributors.values())
+    total_contributions_count = sum(c['total_contributions'] for c in contributors.values())
     
     # Generate pie chart data with percentages
     pie_data = []
     colors = ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF', '#FF9F40', '#FF6B6B', '#4ECDC4']
     for i, (username, contrib_data) in enumerate(sorted_contributors):  # All contributors
-        percentage = (contrib_data['contributions'] / total_contributions_count * 100) if total_contributions_count > 0 else 0
+        percentage = (contrib_data['total_contributions'] / total_contributions_count * 100) if total_contributions_count > 0 else 0
+        
+        # Get improved display name
+        profile = user_profiles.get(username, {})
+        email = profile.get('email')
+        display_name = improve_display_name(contrib_data['name'], email, username)
+        
         pie_data.append({
-            'label': contrib_data['name'],
-            'value': contrib_data['contributions'],
+            'label': display_name,
+            'value': contrib_data['total_contributions'],
             'percentage': round(percentage, 1),
             'color': colors[i % len(colors)],
-            'username': username
+            'username': username,
+            'commits': contrib_data.get('commits', 0),
+            'prs_created': contrib_data.get('prs_created', 0),
+            'prs_merged': contrib_data.get('prs_merged', 0),
+            'prs_reviewed': contrib_data.get('prs_reviewed', 0)
         })
     
     # Generate time series data for aggregate contributions
@@ -53,8 +87,19 @@ def generate_html_report(data, output_file="reports/github_report.html"):
         # Create daily aggregates
         daily_totals = defaultdict(int)
         for user, user_daily in daily_contributions.items():
-            for date, count in user_daily.items():
-                daily_totals[date] += count
+            for date, metrics in user_daily.items():
+                # Handle both old format (int) and new format (dict)
+                if isinstance(metrics, dict):
+                    total_day_contributions = (
+                        metrics.get('commits', 0) + 
+                        metrics.get('prs_created', 0) + 
+                        metrics.get('prs_merged', 0) + 
+                        metrics.get('prs_reviewed', 0)
+                    )
+                else:
+                    # Backward compatibility with old format
+                    total_day_contributions = metrics
+                daily_totals[date] += total_day_contributions
         
         # Generate complete date range
         current_date = datetime.strptime(start_date, "%Y-%m-%d")
@@ -75,10 +120,30 @@ def generate_html_report(data, output_file="reports/github_report.html"):
     individual_data = {}
     for username, user_daily in daily_contributions.items():
         if username in user_profiles:
+            # Convert daily data to totals for individual charts
+            daily_totals = {}
+            for date, metrics in user_daily.items():
+                if isinstance(metrics, dict):
+                    daily_totals[date] = (
+                        metrics.get('commits', 0) + 
+                        metrics.get('prs_created', 0) + 
+                        metrics.get('prs_merged', 0) + 
+                        metrics.get('prs_reviewed', 0)
+                    )
+                else:
+                    # Backward compatibility
+                    daily_totals[date] = metrics
+            
+            # Get improved display name
+            profile = user_profiles[username]
+            email = profile.get('email')
+            display_name = improve_display_name(profile['name'], email, username)
+            
             individual_data[username] = {
-                'name': user_profiles[username]['name'],
-                'total': contributors[username]['contributions'],
-                'daily': user_daily
+                'name': display_name,
+                'total': contributors[username]['total_contributions'],
+                'daily': daily_totals,
+                'detailed_daily': user_daily  # Keep detailed breakdown for tooltips
             }
 
     html_content = f"""
@@ -261,6 +326,115 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             color: white;
             border-color: #0366d6;
         }}
+        
+        /* Tooltip styles */
+        .tooltip {{
+            position: relative;
+            cursor: help;
+        }}
+        .tooltip:hover::after {{
+            content: attr(data-tooltip);
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #24292e;
+            color: white;
+            padding: 8px 12px;
+            border-radius: 6px;
+            font-size: 12px;
+            white-space: nowrap;
+            z-index: 1000;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+        }}
+        .tooltip:hover::before {{
+            content: '';
+            position: absolute;
+            bottom: 94%;
+            left: 50%;
+            transform: translateX(-50%);
+            border: 5px solid transparent;
+            border-top-color: #24292e;
+            z-index: 1000;
+        }}
+        
+        /* Sortable table styles */
+        .sortable-header {{
+            cursor: pointer;
+            user-select: none;
+            position: relative;
+            padding-right: 20px !important;
+        }}
+        .sortable-header:hover {{
+            background: #e1e4e8;
+        }}
+        .sortable-header::after {{
+            content: '↕️';
+            position: absolute;
+            right: 8px;
+            top: 50%;
+            transform: translateY(-50%);
+            opacity: 0.5;
+            font-size: 12px;
+        }}
+        .sortable-header.sort-asc::after {{
+            content: '↑';
+            opacity: 1;
+            color: #0366d6;
+        }}
+        .sortable-header.sort-desc::after {{
+            content: '↓';
+            opacity: 1;
+            color: #0366d6;
+        }}
+        
+        /* Hide user functionality */
+        .hide-user-btn {{
+            background: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 20px;
+            height: 20px;
+            font-size: 12px;
+            cursor: pointer;
+            margin-left: 8px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            transition: all 0.2s;
+            opacity: 0;
+        }}
+        .hide-user-btn:hover {{
+            background: #c82333;
+            transform: scale(1.1);
+        }}
+        .contributor-card:hover .hide-user-btn,
+        .contributors-table tr:hover .hide-user-btn {{
+            opacity: 1;
+        }}
+        .hidden-user {{
+            display: none !important;
+        }}
+        .show-all-btn {{
+            background: #28a745;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 12px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }}
+        .show-all-btn:hover {{
+            background: #218838;
+        }}
+        .section-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }}
     </style>
 </head>
 <body>
@@ -280,12 +454,24 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                 <div class="stat-label">Active Contributors</div>
             </div>
             <div class="stat-card">
-                <div class="stat-number">{sum(c['contributions'] for c in contributors.values())}</div>
+                <div class="stat-number">{sum(c['total_contributions'] for c in contributors.values())}</div>
                 <div class="stat-label">Total Contributions</div>
             </div>
             <div class="stat-card">
-                <div class="stat-number">{data['total_repositories']}</div>
-                <div class="stat-label">Repositories</div>
+                <div class="stat-number">{sum(c.get('commits', 0) for c in contributors.values())}</div>
+                <div class="stat-label">Commits</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number">{sum(c.get('prs_created', 0) for c in contributors.values())}</div>
+                <div class="stat-label">PRs Created</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number">{sum(c.get('prs_merged', 0) for c in contributors.values())}</div>
+                <div class="stat-label">PRs Merged</div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-number">{sum(c.get('prs_reviewed', 0) for c in contributors.values())}</div>
+                <div class="stat-label">PR Reviews</div>
             </div>
         </div>
 
@@ -298,18 +484,24 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                     </div>
                 </div>
                 <div>
-                    <h3 style="margin-top: 0;">Contributors Summary</h3>
+                    <div class="section-header">
+                        <h3 style="margin: 0;">Contributors Summary</h3>
+                        <button class="show-all-btn" onclick="showAllUsers()" title="Show all hidden users">Show All</button>
+                    </div>
                     <table class="contributors-table">
                         <thead>
                             <tr>
-                                <th>Rank</th>
-                                <th>Name</th>
-                                <th>Contributions</th>
-                                <th>Percentage</th>
+                                <th class="sortable-header" data-column="rank" data-type="number">Rank</th>
+                                <th class="sortable-header" data-column="name" data-type="string">Name</th>
+                                <th class="sortable-header" data-column="total" data-type="number">Total</th>
+                                <th class="sortable-header" data-column="commits" data-type="number">Commits</th>
+                                <th class="sortable-header" data-column="prs" data-type="number">PRs</th>
+                                <th class="sortable-header" data-column="reviews" data-type="number">Reviews</th>
+                                <th class="sortable-header" data-column="percentage" data-type="number">%</th>
                             </tr>
                         </thead>
                         <tbody>
-                            {generate_contributors_table(sorted_contributors, total_contributions_count)}
+                            {generate_contributors_table(sorted_contributors, total_contributions_count, user_profiles)}
                         </tbody>
                     </table>
                 </div>
@@ -324,7 +516,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                 <button class="filter-button" data-filter="individual">Select Member</button>
                 <select id="memberSelect" style="display: none; padding: 8px; border: 1px solid #e1e4e8; border-radius: 6px;">
                     <option value="">Choose a team member...</option>
-                    {generate_member_options(sorted_contributors)}
+                    {generate_member_options(sorted_contributors, user_profiles)}
                 </select>
             </div>
             <div class="chart-container">
@@ -356,7 +548,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
 
         // Pie Chart
         const pieCtx = document.getElementById('pieChart').getContext('2d');
-        new Chart(pieCtx, {{
+        window.pieChart = new Chart(pieCtx, {{
             type: 'pie',
             data: {{
                 labels: pieData.map(d => d.label),
@@ -377,7 +569,14 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                     tooltip: {{
                         callbacks: {{
                             label: function(context) {{
-                                return context.label + ': ' + context.parsed + ' (' + pieData[context.dataIndex].percentage + '%)';
+                                const data = pieData[context.dataIndex];
+                                return [
+                                    context.label + ': ' + context.parsed + ' (' + data.percentage + '%)',
+                                    '  • Commits: ' + data.commits,
+                                    '  • PRs Created: ' + data.prs_created,
+                                    '  • PRs Merged: ' + data.prs_merged,
+                                    '  • PR Reviews: ' + data.prs_reviewed
+                                ];
                             }}
                         }}
                     }}
@@ -610,6 +809,220 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                 }}
             }});
         }});
+
+        // Table sorting functionality
+        const table = document.querySelector('.contributors-table');
+        const headers = table.querySelectorAll('.sortable-header');
+        let currentSort = {{ column: 'rank', direction: 'asc' }};
+
+        headers.forEach(header => {{
+            header.addEventListener('click', function() {{
+                const column = this.dataset.column;
+                const type = this.dataset.type;
+                
+                // Toggle direction if same column, otherwise default to desc for most columns
+                let direction = 'desc';
+                if (currentSort.column === column) {{
+                    direction = currentSort.direction === 'asc' ? 'desc' : 'asc';
+                }} else if (column === 'rank') {{
+                    direction = 'asc'; // Rank should default to ascending
+                }}
+                
+                sortTable(column, direction, type);
+                updateSortIndicators(column, direction);
+                
+                currentSort = {{ column, direction }};
+            }});
+        }});
+
+        function sortTable(column, direction, type) {{
+            const tbody = table.querySelector('tbody');
+            const rows = Array.from(tbody.querySelectorAll('tr'));
+            
+            rows.sort((a, b) => {{
+                let aVal = a.dataset[column];
+                let bVal = b.dataset[column];
+                
+                if (type === 'number') {{
+                    aVal = parseFloat(aVal) || 0;
+                    bVal = parseFloat(bVal) || 0;
+                }} else {{
+                    aVal = aVal.toLowerCase();
+                    bVal = bVal.toLowerCase();
+                }}
+                
+                if (direction === 'asc') {{
+                    return aVal < bVal ? -1 : aVal > bVal ? 1 : 0;
+                }} else {{
+                    return aVal > bVal ? -1 : aVal < bVal ? 1 : 0;
+                }}
+            }});
+            
+            // Re-append sorted rows
+            rows.forEach(row => tbody.appendChild(row));
+        }}
+
+        function updateSortIndicators(activeColumn, direction) {{
+            headers.forEach(header => {{
+                header.classList.remove('sort-asc', 'sort-desc');
+                if (header.dataset.column === activeColumn) {{
+                    header.classList.add(direction === 'asc' ? 'sort-asc' : 'sort-desc');
+                }}
+            }});
+        }}
+
+        // Set initial sort indicator
+        updateSortIndicators('rank', 'asc');
+
+        // User hiding functionality
+        let hiddenUsers = JSON.parse(localStorage.getItem('hiddenUsers') || '[]');
+        
+        function toggleUserVisibility(username) {{
+            const index = hiddenUsers.indexOf(username);
+            if (index > -1) {{
+                hiddenUsers.splice(index, 1);
+            }} else {{
+                hiddenUsers.push(username);
+            }}
+            
+            localStorage.setItem('hiddenUsers', JSON.stringify(hiddenUsers));
+            updateUserVisibility();
+            recalculateStats();
+            updatePieChart();
+        }}
+        
+        function showAllUsers() {{
+            hiddenUsers = [];
+            localStorage.setItem('hiddenUsers', JSON.stringify(hiddenUsers));
+            updateUserVisibility();
+            recalculateStats();
+            updatePieChart();
+        }}
+        
+        function updateUserVisibility() {{
+            // Update table rows
+            const tableRows = document.querySelectorAll('.contributors-table tbody tr');
+            tableRows.forEach(row => {{
+                const username = row.dataset.username;
+                if (hiddenUsers.includes(username)) {{
+                    row.classList.add('hidden-user');
+                }} else {{
+                    row.classList.remove('hidden-user');
+                }}
+            }});
+            
+            // Update contributor cards
+            const cards = document.querySelectorAll('.contributor-card');
+            cards.forEach(card => {{
+                const username = card.dataset.username;
+                if (hiddenUsers.includes(username)) {{
+                    card.classList.add('hidden-user');
+                }} else {{
+                    card.classList.remove('hidden-user');
+                }}
+            }});
+        }}
+        
+        function recalculateStats() {{
+            const visibleRows = document.querySelectorAll('.contributors-table tbody tr:not(.hidden-user)');
+            let totalContributions = 0;
+            
+            // Calculate new total from visible users
+            visibleRows.forEach(row => {{
+                totalContributions += parseInt(row.dataset.total) || 0;
+            }});
+            
+            // Update percentages for visible users
+            visibleRows.forEach(row => {{
+                const userTotal = parseInt(row.dataset.total) || 0;
+                const newPercentage = totalContributions > 0 ? (userTotal / totalContributions * 100) : 0;
+                
+                // Update percentage text
+                const percentageCell = row.cells[6];
+                const percentageText = percentageCell.querySelector('div').previousSibling;
+                percentageText.textContent = newPercentage.toFixed(1) + '%';
+                
+                // Update percentage bar
+                const percentageFill = percentageCell.querySelector('.percentage-fill');
+                percentageFill.style.width = newPercentage + '%';
+            }});
+            
+            // Update stats cards
+            updateStatsCards();
+        }}
+        
+        function updateStatsCards() {{
+            const visibleRows = document.querySelectorAll('.contributors-table tbody tr:not(.hidden-user)');
+            let totalContribs = 0, totalCommits = 0, totalPRs = 0, totalReviews = 0;
+            
+            visibleRows.forEach(row => {{
+                totalContribs += parseInt(row.dataset.total) || 0;
+                totalCommits += parseInt(row.dataset.commits) || 0;
+                totalPRs += parseInt(row.dataset.prs) || 0;
+                totalReviews += parseInt(row.dataset.reviews) || 0;
+            }});
+            
+            // Update stat cards
+            const statCards = document.querySelectorAll('.stat-card .stat-number');
+            if (statCards.length >= 6) {{
+                statCards[0].textContent = visibleRows.length; // Active Contributors
+                statCards[1].textContent = totalContribs.toLocaleString(); // Total Contributions
+                statCards[2].textContent = totalCommits.toLocaleString(); // Commits
+                statCards[3].textContent = 'N/A'; // PRs Created (we don't have separate data)
+                statCards[4].textContent = 'N/A'; // PRs Merged (we don't have separate data)
+                statCards[5].textContent = totalReviews.toLocaleString(); // PR Reviews
+            }}
+        }}
+        
+        function updatePieChart() {{
+            const visibleRows = document.querySelectorAll('.contributors-table tbody tr:not(.hidden-user)');
+            let totalContributions = 0;
+            
+            // Calculate total from visible users
+            visibleRows.forEach(row => {{
+                totalContributions += parseInt(row.dataset.total) || 0;
+            }});
+            
+            // Create new data arrays for visible users only
+            const newLabels = [];
+            const newData = [];
+            const newColors = [];
+            
+            visibleRows.forEach((row, index) => {{
+                const username = row.dataset.username;
+                const displayName = row.dataset.name;
+                const userTotal = parseInt(row.dataset.total) || 0;
+                
+                // Find original pie data for this user to get color and other info
+                const originalData = pieData.find(item => item.username === username);
+                
+                newLabels.push(displayName);
+                newData.push(userTotal);
+                newColors.push(originalData ? originalData.color : pieData[index % pieData.length].color);
+            }});
+            
+            // Update the pie chart
+            if (window.pieChart) {{
+                window.pieChart.data.labels = newLabels;
+                window.pieChart.data.datasets[0].data = newData;
+                window.pieChart.data.datasets[0].backgroundColor = newColors;
+                window.pieChart.update();
+            }}
+        }}
+        
+        // Initialize user visibility on page load
+        document.addEventListener('DOMContentLoaded', function() {{
+            updateUserVisibility();
+            recalculateStats();
+            updatePieChart();
+        }});
+        
+        // Also run after the page is fully loaded
+        window.addEventListener('load', function() {{
+            updateUserVisibility();
+            recalculateStats();
+            updatePieChart();
+        }});
     </script>
 </body>
 </html>
@@ -627,31 +1040,74 @@ def generate_contributor_cards(sorted_contributors, user_profiles):
     for rank, (username, contrib_data) in enumerate(sorted_contributors, 1):
         if username in user_profiles:
             profile = user_profiles[username]
+            email = profile.get('email')
+            display_name = improve_display_name(profile['name'], email, username)
             rank_color = "#1a73e8" if rank <= 3 else "#5f6368"
+            
+            # Create tooltip text
+            tooltip_text = ""
+            if email:
+                tooltip_text = f"Email: {email}"
+            elif username != display_name.rstrip('@'):
+                tooltip_text = f"GitHub: @{username}"
+            
+            # Create name with tooltip and hide button
+            name_content = f'<span class="tooltip" data-tooltip="{tooltip_text}">{display_name}</span>' if tooltip_text else display_name
+            name_element = f'<div class="contributor-name">{name_content}<button class="hide-user-btn" onclick="toggleUserVisibility(\'{username}\')" title="Hide this user">−</button></div>'
+            
             cards_html += f"""
                 <div class="contributor-card" data-username="{username}">
                     <div style="display: flex; justify-content: space-between; align-items: center;">
-                        <div class="contributor-name">{profile['name']}</div>
+                        {name_element}
                         <span style="color: {rank_color}; font-weight: bold; font-size: 18px;">#{rank}</span>
                     </div>
                     <div class="contributor-stats">
-                        @{username} • {contrib_data['contributions']} contributions
+                        @{username} • {contrib_data['total_contributions']} contributions<br>
+                        <small style="color: #6a737d;">
+                            {contrib_data.get('commits', 0)} commits • {contrib_data.get('prs_created', 0)} PRs • {contrib_data.get('prs_reviewed', 0)} reviews
+                        </small>
                     </div>
                 </div>
             """
     return cards_html
 
-def generate_contributors_table(sorted_contributors, total_contributions_count):
-    """Generate HTML for contributors table with percentages."""
+def generate_contributors_table(sorted_contributors, total_contributions_count, user_profiles):
+    """Generate HTML for contributors table with detailed breakdown."""
     table_html = ""
     for rank, (username, contrib_data) in enumerate(sorted_contributors, 1):
-        percentage = (contrib_data['contributions'] / total_contributions_count * 100) if total_contributions_count > 0 else 0
+        percentage = (contrib_data['total_contributions'] / total_contributions_count * 100) if total_contributions_count > 0 else 0
         rank_color = "#1a73e8" if rank <= 3 else "#5f6368"
+        
+        # Get improved display name
+        profile = user_profiles.get(username, {})
+        email = profile.get('email')
+        display_name = improve_display_name(contrib_data['name'], email, username)
+        
+        commits = contrib_data.get('commits', 0)
+        prs_created = contrib_data.get('prs_created', 0)
+        prs_merged = contrib_data.get('prs_merged', 0)
+        prs_reviewed = contrib_data.get('prs_reviewed', 0)
+        
+        # Create tooltip text
+        tooltip_text = ""
+        if email:
+            tooltip_text = f"Email: {email}"
+        elif username != display_name.rstrip('@'):
+            tooltip_text = f"GitHub: @{username}"
+        
+        # Create name cell with tooltip and hide button
+        name_content = f'<span class="tooltip" data-tooltip="{tooltip_text}">{display_name}</span>' if tooltip_text else display_name
+        name_cell = f'<strong>{name_content}<button class="hide-user-btn" onclick="toggleUserVisibility(\'{username}\')" title="Hide this user">−</button></strong>'
+        
         table_html += f"""
-            <tr>
+            <tr data-username="{username}" data-rank="{rank}" data-name="{display_name}" data-total="{contrib_data['total_contributions']}" 
+                data-commits="{commits}" data-prs="{prs_created + prs_merged}" data-reviews="{prs_reviewed}" data-percentage="{percentage:.1f}">
                 <td><span style="color: {rank_color}; font-weight: bold;">#{rank}</span></td>
-                <td><strong>{contrib_data['name']}</strong></td>
-                <td>{contrib_data['contributions']:,}</td>
+                <td>{name_cell}</td>
+                <td>{contrib_data['total_contributions']:,}</td>
+                <td>{commits:,}</td>
+                <td>{prs_created + prs_merged:,}</td>
+                <td>{prs_reviewed:,}</td>
                 <td>
                     {percentage:.1f}%
                     <div class="percentage-bar">
@@ -662,11 +1118,16 @@ def generate_contributors_table(sorted_contributors, total_contributions_count):
         """
     return table_html
 
-def generate_member_options(sorted_contributors):
+def generate_member_options(sorted_contributors, user_profiles):
     """Generate HTML options for member selection dropdown."""
     options_html = ""
     for rank, (username, contrib_data) in enumerate(sorted_contributors, 1):
-        options_html += f'<option value="{username}">#{rank} {contrib_data["name"]} ({contrib_data["contributions"]} contributions)</option>'
+        # Get improved display name
+        profile = user_profiles.get(username, {})
+        email = profile.get('email')
+        display_name = improve_display_name(contrib_data['name'], email, username)
+        
+        options_html += f'<option value="{username}">#{rank} {display_name} ({contrib_data["total_contributions"]} contributions)</option>'
     return options_html
 
 def main():
@@ -689,7 +1150,11 @@ def main():
         
         print(f"✅ Report generated successfully: {output_file}")
         print(f"📊 Found {len(data['contributors'])} contributors")
-        print(f"📈 Total contributions: {sum(c['contributions'] for c in data['contributors'].values())}")
+        print(f"📈 Total contributions: {sum(c['total_contributions'] for c in data['contributors'].values())}")
+        print(f"   • Commits: {sum(c.get('commits', 0) for c in data['contributors'].values())}")
+        print(f"   • PRs Created: {sum(c.get('prs_created', 0) for c in data['contributors'].values())}")
+        print(f"   • PRs Merged: {sum(c.get('prs_merged', 0) for c in data['contributors'].values())}")
+        print(f"   • PR Reviews: {sum(c.get('prs_reviewed', 0) for c in data['contributors'].values())}")
         
     except FileNotFoundError as e:
         print(f"❌ Error: {e}")
