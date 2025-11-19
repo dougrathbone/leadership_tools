@@ -201,52 +201,6 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             height: 400px;
             margin: 20px 0;
         }}
-        .contributors-section {{
-            margin-top: 40px;
-        }}
-        .contributor-list {{
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
-            gap: 15px;
-            margin-top: 20px;
-        }}
-        .contributor-card {{
-            border: 1px solid #e1e4e8;
-            border-radius: 6px;
-            padding: 15px;
-            background: white;
-            cursor: pointer;
-            transition: all 0.2s;
-        }}
-        .contributor-card:hover {{
-            border-color: #0366d6;
-            box-shadow: 0 2px 8px rgba(3,102,214,0.1);
-        }}
-        .contributor-card.selected {{
-            border-color: #0366d6;
-            background: #f1f8ff;
-        }}
-        .contributor-name {{
-            font-weight: 600;
-            margin-bottom: 5px;
-        }}
-        .contributor-stats {{
-            color: #586069;
-            font-size: 14px;
-        }}
-        .individual-chart {{
-            display: none;
-            margin-top: 30px;
-        }}
-        .individual-chart.active {{
-            display: block;
-        }}
-        .contributor-list.collapsed {{
-            display: none;
-        }}
-        .contributors-section.individual-mode p {{
-            display: none;
-        }}
         .stats-grid {{
             display: grid;
             grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -415,7 +369,6 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             background: #c82333;
             transform: scale(1.1);
         }}
-        .contributor-card:hover .hide-user-btn,
         .contributors-table tr:hover .hide-user-btn {{
             opacity: 1;
         }}
@@ -519,8 +472,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             <div class="timeline-controls">
                 <span style="font-weight: 600;">View:</span>
                 <button class="filter-button active" data-filter="all">All Team</button>
-                <button class="filter-button" data-filter="individual">Select Member</button>
-                <select id="memberSelect" style="display: none; padding: 8px; border: 1px solid #e1e4e8; border-radius: 6px;">
+                <select id="memberSelect" style="padding: 8px; border: 1px solid #e1e4e8; border-radius: 6px; margin-left: 10px;">
                     <option value="">Choose a team member...</option>
                     {generate_member_options(sorted_contributors, user_profiles)}
                 </select>
@@ -530,23 +482,6 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             </div>
         </div>
 
-        <div class="contributors-section">
-            <h2>Team member contributions over time</h2>
-            <p>Click on a team member to see their individual contribution timeline:</p>
-            <div class="contributor-list">
-                {generate_contributor_cards(sorted_contributors, user_profiles)}
-            </div>
-        </div>
-
-        <div id="individualChart" class="individual-chart">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                <h3 id="individualTitle">Individual Contributions</h3>
-                <button class="show-all-btn" onclick="showAllTeamMembers()" title="Back to team member list">← Back to Team</button>
-            </div>
-            <div class="chart-container">
-                <canvas id="individualTimelineChart"></canvas>
-            </div>
-        </div>
     </div>
 
     <script>
@@ -669,25 +604,16 @@ def generate_html_report(data, output_file="reports/github_report.html"):
         }});
 
         // Timeline filter functionality
-        const filterButtons = document.querySelectorAll('.filter-button');
+        const allTeamButton = document.querySelector('.filter-button[data-filter="all"]');
         const memberSelect = document.getElementById('memberSelect');
 
-        filterButtons.forEach(button => {{
-            button.addEventListener('click', function() {{
-                filterButtons.forEach(btn => btn.classList.remove('active'));
-                this.classList.add('active');
-                
-                const filter = this.dataset.filter;
-                if (filter === 'individual') {{
-                    memberSelect.style.display = 'block';
-                }} else {{
-                    memberSelect.style.display = 'none';
-                    // Reset to show all team data
-                    updateTimelineChart('all', null);
-                }}
-            }});
+        // All Team button resets dropdown and shows team view
+        allTeamButton.addEventListener('click', function() {{
+            memberSelect.value = ''; // Reset dropdown to "Choose a team member..."
+            updateTimelineChart('all', null);
         }});
 
+        // Dropdown selection shows individual member
         memberSelect.addEventListener('change', function() {{
             const selectedMember = this.value;
             if (selectedMember) {{
@@ -742,107 +668,6 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             timelineChart.update();
         }}
 
-        // Individual contributor selection and chart
-        let individualChart = null;
-        const contributorCards = document.querySelectorAll('.contributor-card');
-        const individualChartDiv = document.getElementById('individualChart');
-        const individualTitle = document.getElementById('individualTitle');
-        const contributorList = document.querySelector('.contributor-list');
-        const contributorsSection = document.querySelector('.contributors-section');
-
-        contributorCards.forEach(card => {{
-            card.addEventListener('click', function() {{
-                // Remove previous selection
-                contributorCards.forEach(c => c.classList.remove('selected'));
-                
-                // Select current card
-                this.classList.add('selected');
-                
-                // Get username
-                const username = this.dataset.username;
-                const userData = individualData[username];
-                
-                if (userData) {{
-                    // Collapse the contributor list and hide description
-                    contributorList.classList.add('collapsed');
-                    contributorsSection.classList.add('individual-mode');
-                    
-                    // Show individual chart
-                    individualChartDiv.classList.add('active');
-                    individualTitle.textContent = `${{userData.name}} - Individual Contributions`;
-                    
-                    // Prepare data for individual chart
-                    const userDates = Object.keys(userData.daily).sort();
-                    const userContributions = userDates.map(date => ({{
-                        date: date,
-                        count: userData.daily[date]
-                    }}));
-                    
-                    // Destroy existing chart
-                    if (individualChart) {{
-                        individualChart.destroy();
-                    }}
-                    
-                    // Create new chart
-                    const individualCtx = document.getElementById('individualTimelineChart').getContext('2d');
-                    individualChart = new Chart(individualCtx, {{
-                        type: 'bar',
-                        data: {{
-                            labels: userContributions.map(d => d.date),
-                            datasets: [{{
-                                label: 'Contributions',
-                                data: userContributions.map(d => d.count),
-                                backgroundColor: '#28a745',
-                                borderColor: '#22863a',
-                                borderWidth: 1
-                            }}]
-                        }},
-                        options: {{
-                            responsive: true,
-                            maintainAspectRatio: false,
-                            scales: {{
-                                x: {{
-                                    type: 'time',
-                                    time: {{
-                                        unit: 'day',
-                                        displayFormats: {{
-                                            day: 'MMM dd'
-                                        }}
-                                    }}
-                                }},
-                                y: {{
-                                    beginAtZero: true
-                                }}
-                            }},
-                            plugins: {{
-                                legend: {{
-                                    display: false
-                                }}
-                            }}
-                        }}
-                    }});
-                }}
-            }});
-        }});
-
-        // Function to show all team members (back button)
-        function showAllTeamMembers() {{
-            // Hide individual chart
-            individualChartDiv.classList.remove('active');
-            
-            // Show contributor list and description
-            contributorList.classList.remove('collapsed');
-            contributorsSection.classList.remove('individual-mode');
-            
-            // Remove selection from all cards
-            contributorCards.forEach(c => c.classList.remove('selected'));
-            
-            // Destroy individual chart if it exists
-            if (individualChart) {{
-                individualChart.destroy();
-                individualChart = null;
-            }}
-        }}
 
         // Table sorting functionality
         const table = document.querySelector('.contributors-table');
@@ -942,17 +767,6 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                     row.classList.add('hidden-user');
                 }} else {{
                     row.classList.remove('hidden-user');
-                }}
-            }});
-            
-            // Update contributor cards
-            const cards = document.querySelectorAll('.contributor-card');
-            cards.forEach(card => {{
-                const username = card.dataset.username;
-                if (hiddenUsers.includes(username)) {{
-                    card.classList.add('hidden-user');
-                }} else {{
-                    card.classList.remove('hidden-user');
                 }}
             }});
         }}
@@ -1068,42 +882,6 @@ def generate_html_report(data, output_file="reports/github_report.html"):
     
     return output_file
 
-def generate_contributor_cards(sorted_contributors, user_profiles):
-    """Generate HTML for contributor cards."""
-    cards_html = ""
-    for rank, (username, contrib_data) in enumerate(sorted_contributors, 1):
-        if username in user_profiles:
-            profile = user_profiles[username]
-            email = profile.get('email')
-            display_name = improve_display_name(profile['name'], email, username)
-            rank_color = "#1a73e8" if rank <= 3 else "#5f6368"
-            
-            # Create tooltip text
-            tooltip_text = ""
-            if email:
-                tooltip_text = f"Email: {email}"
-            elif username != display_name.rstrip('@'):
-                tooltip_text = f"GitHub: @{username}"
-            
-            # Create name with tooltip and hide button
-            name_content = f'<span class="tooltip" data-tooltip="{tooltip_text}">{display_name}</span>' if tooltip_text else display_name
-            name_element = f'<div class="contributor-name">{name_content}<button class="hide-user-btn" onclick="toggleUserVisibility(\'{username}\')" title="Hide this user">−</button></div>'
-            
-            cards_html += f"""
-                <div class="contributor-card" data-username="{username}">
-                    <div style="display: flex; justify-content: space-between; align-items: center;">
-                        {name_element}
-                        <span style="color: {rank_color}; font-weight: bold; font-size: 18px;">#{rank}</span>
-                    </div>
-                    <div class="contributor-stats">
-                        @{username} • {contrib_data['total_contributions']} contributions<br>
-                        <small style="color: #6a737d;">
-                            {contrib_data.get('commits', 0)} commits • {contrib_data.get('prs_created', 0)} PRs • {contrib_data.get('prs_reviewed', 0)} reviews
-                        </small>
-                    </div>
-                </div>
-            """
-    return cards_html
 
 def generate_contributors_table(sorted_contributors, total_contributions_count, user_profiles):
     """Generate HTML for contributors table with detailed breakdown."""
