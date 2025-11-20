@@ -1051,7 +1051,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                 const username = row.dataset.username;
                 const userData = pieData.find(item => item.username === username);
                 if (userData) {{
-                    totalContribs += userData.commits + userData.prs_created + userData.prs_merged + userData.prs_reviewed;
+                    totalContribs += userData.commits + userData.prs_reviewed;
                     totalCommits += userData.commits;
                     totalPRsCreated += userData.prs_created;
                     totalReviews += userData.prs_reviewed;
@@ -1305,7 +1305,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             const visibleData = getVisiblePieData();
             const totalContributions = visibleData.map(d => d.value);
             const commits = visibleData.map(d => d.commits);
-            const prs = visibleData.map(d => d.prs_created + d.prs_merged);
+            const prs = visibleData.map(d => d.prs_created);
             const reviews = visibleData.map(d => d.prs_reviewed);
             
             const totalStats = calculateStatistics(totalContributions);
@@ -1363,7 +1363,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             // Extract data for each metric from visible users only
             const totalContributions = visibleData.map(d => d.value);
             const commits = visibleData.map(d => d.commits);
-            const prs = visibleData.map(d => d.prs_created + d.prs_merged);
+            const prs = visibleData.map(d => d.prs_created);
             const reviews = visibleData.map(d => d.prs_reviewed);
             
             // Destroy existing charts if they exist
@@ -1521,13 +1521,13 @@ def generate_contributors_table(sorted_contributors, total_contributions_count, 
         
         table_html += f"""
             <tr data-username="{username}" data-rank="{rank}" data-name="{display_name}" data-total="{contrib_data['total_contributions']}" 
-                data-commits="{commits}" data-prs="{prs_created + prs_merged}" data-reviews="{prs_reviewed}" data-percentage="{percentage:.1f}"
+                data-commits="{commits}" data-prs="{prs_created}" data-reviews="{prs_reviewed}" data-percentage="{percentage:.1f}"
                 onclick="selectUserInTimeline('{username}')" title="Click to view individual timeline">
                 <td><span style="color: {rank_color}; font-weight: bold;">#{rank}</span></td>
                 <td>{name_cell}</td>
                 <td>{contrib_data['total_contributions']:,}</td>
                 <td>{commits:,}</td>
-                <td>{prs_created + prs_merged:,}</td>
+                <td>{prs_created:,}</td>
                 <td>{prs_reviewed:,}</td>
                 <td>
                     {percentage:.1f}%
