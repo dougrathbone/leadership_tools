@@ -401,7 +401,10 @@ try:
                     reviews = pr_reviews_cache.get(pr.number, [])
                     prs_reviewed += sum(1 for review in reviews if review.user.login == username)
                 
-                total_contribs = commit_count + prs_created + prs_merged + prs_reviewed
+                # Total contributions: commits (includes all commits from merged PRs) + reviews
+                # Note: We don't add prs_merged here because those commits are already counted in commit_count
+                # PRs are tracked separately for process metrics but not double-counted in total
+                total_contribs = commit_count + prs_reviewed
                 
                 contrib_progress = (contrib_idx / total_contributors) * 100
                 print(f"   [{contrib_progress:.0f}%] {contrib_idx}/{total_contributors} - {name}: {commit_count} commits, {prs_created} PRs created, {prs_merged} PRs merged, {prs_reviewed} PR reviews")
