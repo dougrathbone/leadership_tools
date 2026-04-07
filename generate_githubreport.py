@@ -45,6 +45,10 @@ def generate_html_report(data, output_file="reports/github_report.html"):
     contributors = data['contributors']
     daily_contributions = data['daily_contributions']
     user_profiles = data['user_profiles']
+    total_repositories = data.get(
+        "total_repositories",
+        len(data.get("processed_repositories", [])),
+    )
     
     # Sort contributors by total contributions
     sorted_contributors = sorted(contributors.items(), key=lambda x: x[1]['total_contributions'], reverse=True)
@@ -437,7 +441,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             <div class="meta-info">
                 Organization: <strong>{data['organization']}</strong><br>
                 Period: {data['start_date'][:10]} to {data['end_date'][:10]}<br>
-                Total Repositories: {data['total_repositories']}
+                Total Repositories: {total_repositories}
             </div>
         </div>
 
