@@ -1,5 +1,5 @@
-from github import Github
-from github import RateLimitExceededException
+from github import Github, Auth
+from github import RateLimitExceededException, GithubException
 import getpass
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
@@ -8,71 +8,70 @@ import os
 import time
 import random
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from threading import Lock
 import signal
 import pickle
 
+try:
+    import truststore
+    truststore.inject_into_ssl()
+except ImportError:
+    pass
+
 def handle_rate_limit(func, *args, **kwargs):
     """
-    Wrapper function to handle GitHub API rate limiting with exponential backoff and timeouts
+    Wrapper function to handle GitHub API rate limiting with exponential backoff and timeouts.
+    Handles both primary rate limits (RateLimitExceededException) and secondary/abuse
+    rate limits (403 GithubException).
     """
     max_retries = 5
     base_delay = 1
-    timeout_seconds = 30  # 30 second timeout for requests
     
     for attempt in range(max_retries):
         try:
-            # Set timeout for the request if it's a GitHub API call
-            if hasattr(func, '__self__') and hasattr(func.__self__, '_requester'):
-                # This is a PyGithub method, set timeout on the underlying requester
-                original_timeout = getattr(func.__self__._requester, '_timeout', None)
-                func.__self__._requester._timeout = timeout_seconds
-            
-            result = func(*args, **kwargs)
-            
-            # Restore original timeout
-            if hasattr(func, '__self__') and hasattr(func.__self__, '_requester'):
-                if original_timeout is not None:
-                    func.__self__._requester._timeout = original_timeout
-                else:
-                    delattr(func.__self__._requester, '_timeout')
-            
-            return result
+            return func(*args, **kwargs)
             
         except RateLimitExceededException as e:
             if attempt == max_retries - 1:
-                print(f"Rate limit exceeded after {max_retries} attempts. Exiting.")
+                print(f"Rate limit exceeded after {max_retries} attempts.")
                 raise e
-            
-            # Calculate delay with exponential backoff and jitter
             delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
             print(f"Rate limit exceeded. Retrying in {delay:.2f} seconds... (attempt {attempt + 1}/{max_retries})")
             time.sleep(delay)
+
+        except GithubException as e:
+            if e.status == 403:
+                if attempt == max_retries - 1:
+                    print(f"403 Forbidden after {max_retries} attempts.")
+                    raise e
+                delay = min(60, base_delay * (2 ** attempt)) + random.uniform(0, 2)
+                print(f"   Secondary rate limit (403). Waiting {delay:.0f}s... (attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+            else:
+                raise e
             
         except Exception as e:
-            # Handle timeouts and connection errors with retry
             if any(keyword in str(e).lower() for keyword in ['timeout', 'connection', 'network', 'read timed out']):
                 if attempt == max_retries - 1:
                     print(f"Network/timeout error after {max_retries} attempts: {str(e)}")
                     raise e
-                
                 delay = base_delay * (2 ** attempt) + random.uniform(0, 1)
                 print(f"Network/timeout error. Retrying in {delay:.2f} seconds... (attempt {attempt + 1}/{max_retries}): {str(e)}")
                 time.sleep(delay)
             else:
-                # For other exceptions, don't retry
                 raise e
 
-def fetch_contributor_commits(repo, contributor, start_date):
+def fetch_commits_for_author(repo, author, start_date):
     """
-    Fetch commits for a single contributor with rate limiting
+    Fetch commits for a repository author. ``author`` may be a PyGithub NamedUser
+    or a login string (for people who appear on PRs but not in get_contributors()).
     """
+    login = author.login if hasattr(author, "login") else author
     try:
-        commits = list(handle_rate_limit(repo.get_commits, author=contributor, since=start_date))
-        return contributor.login, commits
+        commits = list(handle_rate_limit(repo.get_commits, author=author, since=start_date))
+        return login, commits
     except Exception as e:
-        print(f"Error fetching commits for {contributor.login}: {str(e)}")
-        return contributor.login, []
+        print(f"Error fetching commits for {login}: {str(e)}")
+        return login, []
 
 def save_state(state_data, filename="reports/scan_state.pkl"):
     """
@@ -102,7 +101,8 @@ def load_state(filename="reports/scan_state.pkl"):
         return None
 
 def save_progress_data(total_contributions, user_profiles, daily_contributions, repo_contributions, 
-                      organization, start_date, processed_repos):
+                      organization, start_date, processed_repos, organization_repository_count=None,
+                      pr_metrics=None):
     """
     Save current progress data to JSON files
     """
@@ -115,6 +115,7 @@ def save_progress_data(total_contributions, user_profiles, daily_contributions, 
             "start_date": start_date.isoformat(),
             "end_date": datetime.now(timezone.utc).isoformat(),
             "processed_repositories": processed_repos,
+            "organization_repository_count": organization_repository_count,
             "contributors": dict(total_contributions),
             "user_profiles": user_profiles,
             "daily_contributions": {
@@ -124,6 +125,9 @@ def save_progress_data(total_contributions, user_profiles, daily_contributions, 
             "repo_contributions": {
                 user: {repo: dict(metrics) for repo, metrics in repos.items()} 
                 for user, repos in repo_contributions.items()
+            },
+            "pr_metrics": {
+                user: dict(m) for user, m in (pr_metrics or {}).items()
             }
         }
         
@@ -157,8 +161,9 @@ if not access_token:
 # Replace with the name of the organization
 ORG_NAME = "heydovetail"
 
-# Create a PyGitHub instance
-g = Github(access_token)
+# Create a PyGitHub instance (retry=False disables PyGithub's internal backoff
+# which can sleep 35+ minutes on secondary rate limits; we handle retries ourselves).
+g = Github(auth=Auth.Token(access_token), retry=False)
 
 # Get the organization
 org = g.get_organization(ORG_NAME)
@@ -185,6 +190,13 @@ repo_contributions = defaultdict(lambda: defaultdict(lambda: {
     "prs_reviewed": 0
 }))
 user_profiles = {}
+
+# Per-user PR metrics: cycle times, PR sizes, review states
+pr_metrics = defaultdict(lambda: {
+    "cycle_times_hours": [],
+    "pr_sizes": [],
+    "reviews_given": {"approved": 0, "changes_requested": 0, "commented": 0},
+})
 
 # Set the default start date to 6 months ago (timezone-aware)
 default_start_date = datetime.now(timezone.utc) - timedelta(days=180)
@@ -223,6 +235,11 @@ if existing_state:
             user_profiles.update(existing_state.get('user_profiles', {}))
             daily_contributions.update(existing_state.get('daily_contributions', {}))
             repo_contributions.update(existing_state.get('repo_contributions', {}))
+            for u, m in existing_state.get('pr_metrics', {}).items():
+                pr_metrics[u]["cycle_times_hours"].extend(m.get("cycle_times_hours", []))
+                pr_metrics[u]["pr_sizes"].extend(m.get("pr_sizes", []))
+                for k, v in m.get("reviews_given", {}).items():
+                    pr_metrics[u]["reviews_given"][k] += v
             print(f"Resuming scan, skipping {len(processed_repo_names)} already processed repositories...")
     except (EOFError, KeyboardInterrupt):
         print("Continuing with fresh scan...")
@@ -231,6 +248,7 @@ if existing_state:
 print("Fetching repository list...")
 repos = handle_rate_limit(org.get_repos, type='all', sort='updated', direction='desc')
 repos_list = list(repos)  # This forces PyGithub to fetch all pages
+organization_repo_total = len(repos_list)
 total_repos = len(repos_list)
 
 # Filter out already processed repositories if resuming
@@ -279,13 +297,16 @@ def signal_handler(signum, frame):
         "repo_contributions": {
             user: {repo: dict(metrics) for repo, metrics in repos.items()} 
             for user, repos in repo_contributions.items()
-        }
+        },
+        "pr_metrics": {u: dict(m) for u, m in pr_metrics.items()},
     }
     save_state(current_state)
     
     # Save progress data
     save_progress_data(total_contributions, user_profiles, daily_contributions, 
-                      repo_contributions, ORG_NAME, start_date, processed_repos)
+                      repo_contributions, ORG_NAME, start_date, processed_repos,
+                      organization_repository_count=organization_repo_total,
+                      pr_metrics=pr_metrics)
     
     print("State and progress saved. You can resume by running the script again.")
     exit(0)
@@ -299,6 +320,19 @@ try:
         progress_percent = (idx / total_repos) * 100
         print(f"\n[{progress_percent:.1f}%] Scanning repository {idx}/{total_repos}: {repo_name}")
 
+        # Proactive rate-limit check: sleep until reset if budget is low
+        try:
+            rate = g.get_rate_limit().core
+            if rate.remaining < 200:
+                sleep_seconds = (rate.reset - datetime.now(timezone.utc)).total_seconds() + 5
+                if sleep_seconds > 0:
+                    print(f"   ⏳ Rate limit low ({rate.remaining} remaining). Sleeping {sleep_seconds:.0f}s until reset at {rate.reset.strftime('%H:%M:%S UTC')}...")
+                    time.sleep(sleep_seconds)
+            else:
+                print(f"   API budget: {rate.remaining}/{rate.limit}")
+        except Exception:
+            pass
+
         try:
             # Get all contributors for the repository with rate limiting
             contributors = handle_rate_limit(repo.get_contributors)
@@ -310,104 +344,146 @@ try:
             
             print(f"   Found {total_contributors} contributors")
 
-            # Get all pull requests for the repository since start date with rate limiting
+            # PRs created in the reporting window. Using sort='created' bounds the set
+            # to PRs actually opened during the period, avoiding the explosion that
+            # sort='updated' causes (bot touches, CI, labels bump updated_at on old PRs).
             all_prs = handle_rate_limit(repo.get_pulls, state='all', sort='created', direction='desc')
             
-            # Filter PRs by date and collect all PR data in one pass
             recent_prs = []
-            pr_reviews_cache = {}  # Cache reviews to avoid repeated API calls
+            pr_reviews_cache = {}
+            skipped_reviews = 0
             
-            print(f"   Fetching PRs and reviews since {start_date.strftime('%Y-%m-%d')}...")
+            print(f"   Fetching PRs created since {start_date.strftime('%Y-%m-%d')}...")
             
             for pr_idx, pr in enumerate(all_prs):
-                if pr.created_at >= start_date:
-                    recent_prs.append(pr)
+                if pr.created_at < start_date:
+                    break
+                
+                recent_prs.append(pr)
+                
+                try:
+                    reviews = list(pr.get_reviews())
+                    pr_reviews_cache[pr.number] = reviews
+                except Exception as review_err:
+                    status = getattr(review_err, 'status', None)
+                    if status == 403:
+                        skipped_reviews += 1
+                    pr_reviews_cache[pr.number] = []
                     
-                    # Fetch reviews once per PR and cache them
-                    try:
-                        reviews = list(handle_rate_limit(pr.get_reviews))
-                        pr_reviews_cache[pr.number] = reviews
-                    except Exception as e:
-                        pr_reviews_cache[pr.number] = []
-                        
-                    # Show progress for PR processing
-                    if (pr_idx + 1) % 100 == 0:
-                        print(f"     Processed {pr_idx + 1} PRs...")
-                else:
-                    break  # PRs are sorted by creation date, so we can break early
+                if (pr_idx + 1) % 100 == 0:
+                    rate = g.get_rate_limit().core
+                    print(f"     Processed {pr_idx + 1} PRs... (API budget: {rate.remaining}/{rate.limit})")
             
+            if skipped_reviews:
+                print(f"   Warning: {skipped_reviews} PR review fetches skipped due to 403")
             print(f"   Found {len(recent_prs)} PRs with reviews cached")
             
-            # Fetch commits for all contributors concurrently
-            print(f"   Fetching commits for {total_contributors} contributors concurrently...")
+            # Everyone with default-branch commits OR any PR role in the window (contributors() alone
+            # misses reviewers and many PR authors — see GitHub's contributors API semantics).
+            usernames = set(contributor_map.keys())
+            for pr in recent_prs:
+                if pr.user:
+                    usernames.add(pr.user.login)
+                for review in pr_reviews_cache.get(pr.number, []):
+                    if review.user:
+                        usernames.add(review.user.login)
+            usernames_sorted = sorted(usernames)
+            total_actors = len(usernames_sorted)
+            
+            # Fetch commits for all actors concurrently
+            print(f"   Fetching commits for {total_actors} GitHub users concurrently...")
             commits_data = {}
             
-            # Use ThreadPoolExecutor for concurrent commit fetching
-            max_workers = min(10, total_contributors)  # Limit concurrent requests to avoid overwhelming API
+            max_workers = min(3, max(1, total_actors))
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                # Submit all commit fetching tasks
-                future_to_contributor = {
-                    executor.submit(fetch_contributor_commits, repo, contributor, start_date): contributor
-                    for contributor in contributors_list
+                future_to_login = {
+                    executor.submit(
+                        fetch_commits_for_author,
+                        repo,
+                        contributor_map[u] if u in contributor_map else u,
+                        start_date,
+                    ): u
+                    for u in usernames_sorted
                 }
                 
-                # Collect results as they complete
                 completed = 0
-                for future in as_completed(future_to_contributor):
-                    username, commits = future.result()
-                    commits_data[username] = commits
+                for future in as_completed(future_to_login):
+                    expected_login = future_to_login[future]
+                    _, commits = future.result()
+                    commits_data[expected_login] = commits
                     completed += 1
-                    
-                    # Show progress
-                    progress = (completed / total_contributors) * 100
-                    print(f"     [{progress:.0f}%] Fetched commits for {completed}/{total_contributors} contributors")
+                    progress = (completed / total_actors) * 100
+                    print(f"     [{progress:.0f}%] Fetched commits for {completed}/{total_actors} users")
             
-            # Now process each contributor efficiently using cached data
-            print(f"   Processing contributions for {total_contributors} contributors...")
+            print(f"   Processing contributions for {total_actors} users...")
             
-            for contrib_idx, contributor in enumerate(contributors_list, start=1):
-                username = contributor.login
-                name = contributor.name or "N/A"
+            for contrib_idx, username in enumerate(usernames_sorted, start=1):
+                contributor = contributor_map.get(username)
+                name = (contributor.name or "N/A") if contributor else "N/A"
                 
-                # Store user profile info
                 if username not in user_profiles:
-                    # Try to get email from contributor object
-                    email = getattr(contributor, 'email', None)
-                    user_profiles[username] = {
-                        "name": name,
-                        "login": username,
-                        "avatar_url": contributor.avatar_url,
-                        "html_url": contributor.html_url,
-                        "email": email
-                    }
+                    if contributor:
+                        email = getattr(contributor, "email", None)
+                        user_profiles[username] = {
+                            "name": name,
+                            "login": username,
+                            "avatar_url": contributor.avatar_url,
+                            "html_url": contributor.html_url,
+                            "email": email,
+                        }
+                    else:
+                        user_profiles[username] = {
+                            "name": "N/A",
+                            "login": username,
+                            "avatar_url": "",
+                            "html_url": f"https://github.com/{username}",
+                            "email": None,
+                        }
                 
-                # Get commits from cached data
                 commits = commits_data.get(username, [])
                 commit_count = len(commits)
                 
-                # Count PRs created and merged by this user (single pass through cached data)
                 prs_created = 0
                 prs_merged = 0
                 prs_reviewed = 0
+                user_cycle_times = []
+                user_pr_sizes = []
+                user_review_states = {"approved": 0, "changes_requested": 0, "commented": 0}
                 
                 for pr in recent_prs:
-                    # Count PRs created by this user
-                    if pr.user.login == username:
-                        prs_created += 1
-                        if pr.merged:
+                    if pr.user and pr.user.login == username:
+                        if pr.created_at >= start_date:
+                            prs_created += 1
+                            user_pr_sizes.append({
+                                "additions": pr.additions,
+                                "deletions": pr.deletions,
+                            })
+                        if pr.merged and pr.merged_at and pr.merged_at >= start_date:
                             prs_merged += 1
+                            hours = (pr.merged_at - pr.created_at).total_seconds() / 3600
+                            user_cycle_times.append(round(hours, 2))
                     
-                    # Count PR reviews by this user (using cached reviews)
-                    reviews = pr_reviews_cache.get(pr.number, [])
-                    prs_reviewed += sum(1 for review in reviews if review.user.login == username)
+                    for review in pr_reviews_cache.get(pr.number, []):
+                        if not review.user or review.user.login != username:
+                            continue
+                        sub = getattr(review, "submitted_at", None)
+                        if sub is not None and sub >= start_date:
+                            prs_reviewed += 1
+                            state = (review.state or "").upper()
+                            if state == "APPROVED":
+                                user_review_states["approved"] += 1
+                            elif state == "CHANGES_REQUESTED":
+                                user_review_states["changes_requested"] += 1
+                            else:
+                                user_review_states["commented"] += 1
                 
                 # Total contributions: commits (includes all commits from merged PRs) + reviews
                 # Note: We don't add prs_merged here because those commits are already counted in commit_count
                 # PRs are tracked separately for process metrics but not double-counted in total
                 total_contribs = commit_count + prs_reviewed
                 
-                contrib_progress = (contrib_idx / total_contributors) * 100
-                print(f"   [{contrib_progress:.0f}%] {contrib_idx}/{total_contributors} - {name}: {commit_count} commits, {prs_created} PRs created, {prs_merged} PRs merged, {prs_reviewed} PR reviews")
+                contrib_progress = (contrib_idx / total_actors) * 100
+                print(f"   [{contrib_progress:.0f}%] {contrib_idx}/{total_actors} - {name}: {commit_count} commits, {prs_created} PRs created, {prs_merged} PRs merged, {prs_reviewed} PR reviews")
                 
                 if total_contribs > 0:
                     total_contributions[username]["name"] = name
@@ -430,15 +506,35 @@ try:
                     
                     # Track daily contributions for PRs (using cached data)
                     for pr in recent_prs:
-                        pr_date = pr.created_at.strftime("%Y-%m-%d")
-                        if pr.user.login == username:
-                            daily_contributions[username][pr_date]["prs_created"] += 1
-                            if pr.merged:
-                                merge_date = pr.merged_at.strftime("%Y-%m-%d") if pr.merged_at else pr_date
+                        if pr.user and pr.user.login == username:
+                            if pr.created_at >= start_date:
+                                pr_date = pr.created_at.strftime("%Y-%m-%d")
+                                daily_contributions[username][pr_date]["prs_created"] += 1
+                            if pr.merged and pr.merged_at and pr.merged_at >= start_date:
+                                merge_date = pr.merged_at.strftime("%Y-%m-%d")
                                 daily_contributions[username][merge_date]["prs_merged"] += 1
+                    
+                    for pr in recent_prs:
+                        for review in pr_reviews_cache.get(pr.number, []):
+                            if review.user and review.user.login == username:
+                                sub = getattr(review, "submitted_at", None)
+                                if sub is not None and sub >= start_date:
+                                    rday = sub.strftime("%Y-%m-%d")
+                                    daily_contributions[username][rday]["prs_reviewed"] += 1
+                
+                if user_cycle_times or user_pr_sizes or any(v > 0 for v in user_review_states.values()):
+                    pr_metrics[username]["cycle_times_hours"].extend(user_cycle_times)
+                    pr_metrics[username]["pr_sizes"].extend(user_pr_sizes)
+                    for k, v in user_review_states.items():
+                        pr_metrics[username]["reviews_given"][k] += v
 
             active_contributors = len([u for u in total_contributions if total_contributions[u]['total_contributions'] > 0])
-            print(f"   ✓ Repository completed. Active contributors found: {active_contributors}")
+            try:
+                rate = g.get_rate_limit().core
+                rate_info = f"API budget: {rate.remaining}/{rate.limit}"
+            except Exception:
+                rate_info = "API budget: unknown"
+            print(f"   ✓ Repository completed. Active contributors: {active_contributors} | {rate_info}")
             
             # Add this repository to processed list
             processed_repos.append(repo_name)
@@ -457,13 +553,16 @@ try:
                 "repo_contributions": {
                     user: {repo: dict(metrics) for repo, metrics in repos.items()} 
                     for user, repos in repo_contributions.items()
-                }
+                },
+                "pr_metrics": {u: dict(m) for u, m in pr_metrics.items()},
             }
             save_state(current_state)
             
             # Save progress data after each repository
             save_progress_data(total_contributions, user_profiles, daily_contributions, 
-                              repo_contributions, ORG_NAME, start_date, processed_repos)
+                              repo_contributions, ORG_NAME, start_date, processed_repos,
+                              organization_repository_count=organization_repo_total,
+                              pr_metrics=pr_metrics)
             
             # Calculate estimated time remaining
             elapsed_time = time.time() - scan_start_time
@@ -499,7 +598,9 @@ print(f"\nScan completed! Processed {len(processed_repos)} repositories.")
 
 # Save final progress data
 save_progress_data(total_contributions, user_profiles, daily_contributions, 
-                  repo_contributions, ORG_NAME, start_date, processed_repos)
+                  repo_contributions, ORG_NAME, start_date, processed_repos,
+                  organization_repository_count=organization_repo_total,
+                  pr_metrics=pr_metrics)
 
 # Clean up state file since scan is complete
 try:

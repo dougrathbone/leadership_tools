@@ -45,10 +45,16 @@ def generate_html_report(data, output_file="reports/github_report.html"):
     contributors = data['contributors']
     daily_contributions = data['daily_contributions']
     user_profiles = data['user_profiles']
-    total_repositories = data.get(
-        "total_repositories",
-        len(data.get("processed_repositories", [])),
-    )
+    repos_in_report = len(data.get("processed_repositories", []))
+    org_repo_total = data.get("organization_repository_count")
+    if org_repo_total is not None:
+        repository_coverage = f"{repos_in_report} repos scanned (organization had {org_repo_total} at scan time)"
+    else:
+        # Older JSON: no org-wide count; avoid implying this is the full org if the scan was partial.
+        legacy = data.get("total_repositories")
+        repository_coverage = (
+            f"{legacy} (legacy field)" if legacy is not None else f"{repos_in_report} repos in this export"
+        )
     
     # Sort contributors by total contributions
     sorted_contributors = sorted(contributors.items(), key=lambda x: x[1]['total_contributions'], reverse=True)
@@ -149,6 +155,68 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                 'daily': daily_totals,
                 'detailed_daily': user_daily  # Keep detailed breakdown for tooltips
             }
+
+    # Prepare PR metrics data for the report (backward-compatible: may be absent)
+    pr_metrics = data.get("pr_metrics", {})
+    has_pr_metrics = bool(pr_metrics)
+    
+    # Build per-user summary for JS and table columns
+    pr_metrics_summary = {}
+    if has_pr_metrics:
+        for username, m in pr_metrics.items():
+            ct = m.get("cycle_times_hours", [])
+            sizes = m.get("pr_sizes", [])
+            rg = m.get("reviews_given", {})
+            total_lines = [s.get("additions", 0) + s.get("deletions", 0) for s in sizes]
+            sorted_ct = sorted(ct)
+            sorted_lines = sorted(total_lines)
+            def _median(vals):
+                n = len(vals)
+                if n == 0:
+                    return None
+                if n % 2 == 1:
+                    return vals[n // 2]
+                return (vals[n // 2 - 1] + vals[n // 2]) / 2
+            pr_metrics_summary[username] = {
+                "cycle_times_hours": ct,
+                "median_cycle_hours": _median(sorted_ct),
+                "pr_sizes": total_lines,
+                "median_pr_size": _median(sorted_lines),
+                "reviews_approved": rg.get("approved", 0),
+                "reviews_changes_requested": rg.get("changes_requested", 0),
+                "reviews_commented": rg.get("commented", 0),
+            }
+
+    pr_velocity_html = ""
+    if has_pr_metrics:
+        pr_velocity_html = """
+        <div class="chart-section">
+            <h2>PR Velocity</h2>
+            <p>How quickly authored PRs move from open to merged, and how PR size relates to cycle time.</p>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px;">
+                <div>
+                    <h3 style="margin-bottom: 15px; color: #24292e;">Median Time to Merge by Author</h3>
+                    <div class="chart-container" style="height: 500px;">
+                        <canvas id="cycleTimeChart"></canvas>
+                    </div>
+                </div>
+                <div>
+                    <h3 style="margin-bottom: 15px; color: #24292e;">PR Size vs Cycle Time</h3>
+                    <div class="chart-container" style="height: 500px;">
+                        <canvas id="prSizeScatterChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="chart-section">
+            <h2>Review Quality</h2>
+            <p>Breakdown of review outcomes per reviewer: Approved, Changes Requested, or Commented.</p>
+            <div class="chart-container" style="height: 500px;">
+                <canvas id="reviewDepthChart"></canvas>
+            </div>
+        </div>
+        """
 
     html_content = f"""
 <!DOCTYPE html>
@@ -441,7 +509,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             <div class="meta-info">
                 Organization: <strong>{data['organization']}</strong><br>
                 Period: {data['start_date'][:10]} to {data['end_date'][:10]}<br>
-                Total Repositories: {total_repositories}
+                Repository coverage: {repository_coverage}
             </div>
         </div>
 
@@ -490,11 +558,14 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                                 <th class="sortable-header" data-column="commits" data-type="number">Commits</th>
                                 <th class="sortable-header" data-column="prs" data-type="number">PRs</th>
                                 <th class="sortable-header" data-column="reviews" data-type="number">Reviews</th>
+                                {'<th class="sortable-header" data-column="cycletime" data-type="number">Cycle Time</th>' if has_pr_metrics else ''}
+                                {'<th class="sortable-header" data-column="prsize" data-type="number">PR Size</th>' if has_pr_metrics else ''}
+                                {'<th class="sortable-header" data-column="reviewdepth" data-type="string">Review Depth</th>' if has_pr_metrics else ''}
                                 <th class="sortable-header" data-column="percentage" data-type="number">%</th>
                             </tr>
                         </thead>
                         <tbody>
-                            {generate_contributors_table(sorted_contributors, total_contributions_count, user_profiles)}
+                            {generate_contributors_table(sorted_contributors, total_contributions_count, user_profiles, pr_metrics_summary if has_pr_metrics else None)}
                         </tbody>
                     </table>
                 </div>
@@ -523,6 +594,16 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                 <canvas id="timelineChart"></canvas>
             </div>
         </div>
+
+        <div class="chart-section">
+            <h2>Collaboration Health</h2>
+            <p>Analyze the balance between code creation (PRs Created) and team support (PR Reviews). Ideal contributors appear in the top-right or along the diagonal.</p>
+            <div class="chart-container" style="height: 500px;">
+                <canvas id="reviewerRatioChart"></canvas>
+            </div>
+        </div>
+
+        {pr_velocity_html}
 
         <div class="chart-section">
             <h2>Contribution Distribution Analysis</h2>
@@ -563,14 +644,6 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                 <div id="statisticalSummary" style="font-family: 'SF Mono', Monaco, 'Cascadia Code', 'Roboto Mono', Consolas, 'Courier New', monospace; font-size: 14px;">
                     <!-- Statistical data will be populated by JavaScript -->
                 </div>
-            </div>
-        </div>
-
-        <div class="chart-section">
-            <h2>Collaboration Health</h2>
-            <p>Analyze the balance between code creation (PRs Created) and team support (PR Reviews). Ideal contributors appear in the top-right or along the diagonal.</p>
-            <div class="chart-container" style="height: 500px;">
-                <canvas id="reviewerRatioChart"></canvas>
             </div>
         </div>
 
@@ -1033,8 +1106,8 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                 const userTotal = parseInt(row.dataset.total) || 0;
                 const newPercentage = totalContributions > 0 ? (userTotal / totalContributions * 100) : 0;
                 
-                // Update percentage text
-                const percentageCell = row.cells[6];
+                // Update percentage text (always last column)
+                const percentageCell = row.cells[row.cells.length - 1];
                 const percentageText = percentageCell.querySelector('div').previousSibling;
                 percentageText.textContent = newPercentage.toFixed(1) + '%';
                 
@@ -1483,6 +1556,167 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                 }}
             }});
         }}
+        // --- PR Velocity & Review Quality charts ---
+        const prMetrics = {json.dumps(pr_metrics_summary)};
+        const hasPrMetrics = Object.keys(prMetrics).length > 0;
+
+        if (hasPrMetrics) {{
+            // Helper: format hours into human-readable string
+            function fmtHours(h) {{
+                if (h == null) return 'N/A';
+                if (h < 1) return Math.round(h * 60) + 'm';
+                if (h < 24) return h.toFixed(1) + 'h';
+                const days = h / 24;
+                return days.toFixed(1) + 'd';
+            }}
+
+            // ----- Cycle Time bar chart -----
+            (function() {{
+                const entries = Object.entries(prMetrics)
+                    .filter(([, m]) => m.median_cycle_hours != null)
+                    .sort((a, b) => a[1].median_cycle_hours - b[1].median_cycle_hours);
+                if (entries.length === 0) return;
+
+                const labels = entries.map(([u]) => {{
+                    const pd = pieData.find(d => d.username === u);
+                    return pd ? pd.label : u;
+                }});
+                const medians = entries.map(([, m]) => m.median_cycle_hours);
+                const bgColors = medians.map(h => h < 24 ? 'rgba(40,167,69,0.7)' : h < 72 ? 'rgba(255,193,7,0.7)' : 'rgba(220,53,69,0.7)');
+
+                const ctx = document.getElementById('cycleTimeChart');
+                if (!ctx) return;
+                new Chart(ctx.getContext('2d'), {{
+                    type: 'bar',
+                    data: {{
+                        labels: labels,
+                        datasets: [{{
+                            label: 'Median hours to merge',
+                            data: medians,
+                            backgroundColor: bgColors,
+                            borderWidth: 0
+                        }}]
+                    }},
+                    options: {{
+                        indexAxis: 'y',
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {{
+                            legend: {{ display: false }},
+                            tooltip: {{
+                                callbacks: {{
+                                    label: ctx2 => fmtHours(ctx2.parsed.x) + ' median'
+                                }}
+                            }}
+                        }},
+                        scales: {{
+                            x: {{
+                                beginAtZero: true,
+                                title: {{ display: true, text: 'Hours' }},
+                                ticks: {{ callback: v => fmtHours(v) }}
+                            }}
+                        }}
+                    }}
+                }});
+            }})();
+
+            // ----- PR Size vs Cycle Time scatter -----
+            (function() {{
+                const datasets = [];
+                const colorPalette = ['#FF6384','#36A2EB','#FFCE56','#4BC0C0','#9966FF','#FF9F40','#FF6B6B','#4ECDC4'];
+                let colorIdx = 0;
+
+                Object.entries(prMetrics).forEach(([username, m]) => {{
+                    const ct = m.cycle_times_hours || [];
+                    const sizes = m.pr_sizes || [];
+                    if (ct.length === 0) return;
+                    const pd = pieData.find(d => d.username === username);
+                    const displayName = pd ? pd.label : username;
+                    const color = colorPalette[colorIdx++ % colorPalette.length];
+
+                    const points = [];
+                    for (let i = 0; i < ct.length && i < sizes.length; i++) {{
+                        points.push({{ x: sizes[i], y: ct[i] }});
+                    }}
+                    if (points.length === 0) return;
+
+                    datasets.push({{
+                        label: displayName,
+                        data: points,
+                        backgroundColor: color + '99',
+                        borderColor: color,
+                        pointRadius: 4,
+                        pointHoverRadius: 6
+                    }});
+                }});
+
+                const ctx = document.getElementById('prSizeScatterChart');
+                if (!ctx || datasets.length === 0) return;
+                new Chart(ctx.getContext('2d'), {{
+                    type: 'scatter',
+                    data: {{ datasets }},
+                    options: {{
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {{
+                            legend: {{ display: true, position: 'right', labels: {{ boxWidth: 8 }} }},
+                            tooltip: {{
+                                callbacks: {{
+                                    label: ctx2 => ctx2.dataset.label + ': ' + ctx2.parsed.x + ' lines, ' + fmtHours(ctx2.parsed.y)
+                                }}
+                            }}
+                        }},
+                        scales: {{
+                            x: {{ beginAtZero: true, title: {{ display: true, text: 'Lines changed (additions + deletions)' }} }},
+                            y: {{ beginAtZero: true, title: {{ display: true, text: 'Cycle time (hours)' }}, ticks: {{ callback: v => fmtHours(v) }} }}
+                        }}
+                    }}
+                }});
+            }})();
+
+            // ----- Review Depth stacked bar -----
+            (function() {{
+                const entries = Object.entries(prMetrics)
+                    .filter(([, m]) => (m.reviews_approved + m.reviews_changes_requested + m.reviews_commented) > 0)
+                    .sort((a, b) =>
+                        (b[1].reviews_approved + b[1].reviews_changes_requested + b[1].reviews_commented) -
+                        (a[1].reviews_approved + a[1].reviews_changes_requested + a[1].reviews_commented)
+                    );
+                if (entries.length === 0) return;
+
+                const labels = entries.map(([u]) => {{
+                    const pd = pieData.find(d => d.username === u);
+                    return pd ? pd.label : u;
+                }});
+
+                const ctx = document.getElementById('reviewDepthChart');
+                if (!ctx) return;
+                new Chart(ctx.getContext('2d'), {{
+                    type: 'bar',
+                    data: {{
+                        labels: labels,
+                        datasets: [
+                            {{ label: 'Approved', data: entries.map(([, m]) => m.reviews_approved), backgroundColor: 'rgba(40,167,69,0.7)' }},
+                            {{ label: 'Changes Requested', data: entries.map(([, m]) => m.reviews_changes_requested), backgroundColor: 'rgba(255,193,7,0.7)' }},
+                            {{ label: 'Commented', data: entries.map(([, m]) => m.reviews_commented), backgroundColor: 'rgba(54,162,235,0.7)' }}
+                        ]
+                    }},
+                    options: {{
+                        indexAxis: 'y',
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: {{
+                            legend: {{ display: true, position: 'top' }},
+                            tooltip: {{ mode: 'index', intersect: false }}
+                        }},
+                        scales: {{
+                            x: {{ stacked: true, beginAtZero: true, title: {{ display: true, text: 'Reviews given' }} }},
+                            y: {{ stacked: true }}
+                        }}
+                    }}
+                }});
+            }})();
+        }}
     </script>
 </body>
 </html>
@@ -1495,7 +1729,18 @@ def generate_html_report(data, output_file="reports/github_report.html"):
     return output_file
 
 
-def generate_contributors_table(sorted_contributors, total_contributions_count, user_profiles):
+def _fmt_hours(h):
+    """Format hours into a human-readable string."""
+    if h is None:
+        return "—"
+    if h < 1:
+        return f"{int(h * 60)}m"
+    if h < 24:
+        return f"{h:.1f}h"
+    return f"{h / 24:.1f}d"
+
+
+def generate_contributors_table(sorted_contributors, total_contributions_count, user_profiles, pr_metrics_summary=None):
     """Generate HTML for contributors table with detailed breakdown."""
     table_html = ""
     for rank, (username, contrib_data) in enumerate(sorted_contributors, 1):
@@ -1523,16 +1768,34 @@ def generate_contributors_table(sorted_contributors, total_contributions_count, 
         name_content = f'<span class="tooltip" data-tooltip="{tooltip_text}">{display_name}</span>' if tooltip_text else display_name
         name_cell = f'<strong>{name_content}</strong>'
         
+        # PR metrics columns (if available)
+        pr_cols = ""
+        extra_data_attrs = ""
+        if pr_metrics_summary is not None:
+            um = pr_metrics_summary.get(username, {})
+            med_ct = um.get("median_cycle_hours")
+            med_size = um.get("median_pr_size")
+            ra = um.get("reviews_approved", 0)
+            rc = um.get("reviews_changes_requested", 0)
+            rcom = um.get("reviews_commented", 0)
+            review_depth_str = f"{ra}A / {rc}C / {rcom}R"
+            
+            extra_data_attrs = f' data-cycletime="{med_ct if med_ct is not None else 999999}" data-prsize="{med_size if med_size is not None else 0}" data-reviewdepth="{ra + rc + rcom}"'
+            pr_cols = f"""
+                <td>{_fmt_hours(med_ct)}</td>
+                <td>{f'{med_size:,.0f}' if med_size is not None else '—'}</td>
+                <td style="font-size:12px; white-space:nowrap;">{review_depth_str}</td>"""
+        
         table_html += f"""
             <tr data-username="{username}" data-rank="{rank}" data-name="{display_name}" data-total="{contrib_data['total_contributions']}" 
-                data-commits="{commits}" data-prs="{prs_created}" data-reviews="{prs_reviewed}" data-percentage="{percentage:.1f}"
+                data-commits="{commits}" data-prs="{prs_created}" data-reviews="{prs_reviewed}" data-percentage="{percentage:.1f}"{extra_data_attrs}
                 onclick="selectUserInTimeline('{username}')" title="Click to view individual timeline">
                 <td><span style="color: {rank_color}; font-weight: bold;">#{rank}</span></td>
                 <td>{name_cell}</td>
                 <td>{contrib_data['total_contributions']:,}</td>
                 <td>{commits:,}</td>
                 <td>{prs_created:,}</td>
-                <td>{prs_reviewed:,}</td>
+                <td>{prs_reviewed:,}</td>{pr_cols}
                 <td>
                     {percentage:.1f}%
                     <div class="percentage-bar">
