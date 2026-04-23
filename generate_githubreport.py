@@ -6,6 +6,12 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 import argparse
 
+# ── Configuration ──────────────────────────────────────────────────────────────
+# Set to True to exclude bot accounts (usernames ending in "[bot]") from the
+# report.  Set to False to include them alongside human contributors.
+EXCLUDE_BOTS = True
+# ───────────────────────────────────────────────────────────────────────────────
+
 def load_contributions_data(data_file="reports/contributions_data.json"):
     """Load the contributions data from JSON file."""
     if not os.path.exists(data_file):
@@ -45,6 +51,11 @@ def generate_html_report(data, output_file="reports/github_report.html"):
     contributors = data['contributors']
     daily_contributions = data['daily_contributions']
     user_profiles = data['user_profiles']
+
+    if EXCLUDE_BOTS:
+        _is_bot = lambda name: name.endswith("[bot]")
+        contributors = {k: v for k, v in contributors.items() if not _is_bot(k)}
+        daily_contributions = {k: v for k, v in daily_contributions.items() if not _is_bot(k)}
     repos_in_report = len(data.get("processed_repositories", []))
     org_repo_total = data.get("organization_repository_count")
     if org_repo_total is not None:
@@ -158,6 +169,8 @@ def generate_html_report(data, output_file="reports/github_report.html"):
 
     # Prepare PR metrics data for the report (backward-compatible: may be absent)
     pr_metrics = data.get("pr_metrics", {})
+    if EXCLUDE_BOTS:
+        pr_metrics = {k: v for k, v in pr_metrics.items() if not _is_bot(k)}
     has_pr_metrics = bool(pr_metrics)
     
     # Build per-user summary for JS and table columns
@@ -227,6 +240,8 @@ def generate_html_report(data, output_file="reports/github_report.html"):
     <title>GitHub Contributions Report - {data['organization']}</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hammerjs@2.0.8"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1"></script>
     <style>
         body {{
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
@@ -520,7 +535,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             </div>
             <div class="stat-card">
                 <div class="stat-number">{sum(c['total_contributions'] for c in contributors.values())}</div>
-                <div class="stat-label">Total Contributions</div>
+                <div class="stat-label" title="Commits + Reviews (PRs excluded to avoid double-counting merged commits)">Activity Score</div>
             </div>
             <div class="stat-card">
                 <div class="stat-number">{sum(c.get('commits', 0) for c in contributors.values())}</div>
@@ -538,29 +553,35 @@ def generate_html_report(data, output_file="reports/github_report.html"):
 
         <div class="chart-section">
             <h2>Team Contribution Distribution</h2>
-            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px; align-items: start;">
-                <div>
-                    <div class="chart-container" style="height: 300px;">
-                        <canvas id="pieChart"></canvas>
-                    </div>
+            <p style="color: #586069; margin: -5px 0 15px 0; font-size: 0.9em; line-height: 1.5;">
+                <strong>Activity Score</strong> = Commits + Reviews (PRs are excluded to avoid double-counting merged commits).
+                <strong>Commits</strong> = merged commits authored in the period.
+                <strong>PRs</strong> = pull requests opened.
+                <strong>Reviews</strong> = pull request reviews submitted.
+                {'<strong>Cycle Time</strong> = median hours from PR open to merge. <strong>PR Size</strong> = median lines changed per PR.' if has_pr_metrics else ''}
+            </p>
+            <div style="max-width: 420px; margin: 0 auto 30px auto;">
+                <div class="chart-container" style="height: 320px;">
+                    <canvas id="pieChart"></canvas>
                 </div>
-                <div>
-                    <div class="section-header">
-                        <h3 style="margin: 0;">Contributors Summary</h3>
-                        <button class="show-all-btn" onclick="showAllUsers()" title="Show all hidden users">Show All</button>
-                    </div>
+            </div>
+            <div>
+                <div class="section-header">
+                    <h3 style="margin: 0;">Contributors Summary</h3>
+                    <button class="show-all-btn" onclick="showAllUsers()" title="Show all hidden users">Show All</button>
+                </div>
+                <div style="overflow-x: auto;">
                     <table class="contributors-table">
                         <thead>
                             <tr>
                                 <th class="sortable-header" data-column="rank" data-type="number">Rank</th>
                                 <th class="sortable-header" data-column="name" data-type="string">Name</th>
-                                <th class="sortable-header" data-column="total" data-type="number">Total</th>
+                                <th class="sortable-header" data-column="total" data-type="number" title="Commits + Reviews (PRs excluded to avoid double-counting merged commits)">Activity Score</th>
                                 <th class="sortable-header" data-column="commits" data-type="number">Commits</th>
                                 <th class="sortable-header" data-column="prs" data-type="number">PRs</th>
                                 <th class="sortable-header" data-column="reviews" data-type="number">Reviews</th>
                                 {'<th class="sortable-header" data-column="cycletime" data-type="number">Cycle Time</th>' if has_pr_metrics else ''}
                                 {'<th class="sortable-header" data-column="prsize" data-type="number">PR Size</th>' if has_pr_metrics else ''}
-                                {'<th class="sortable-header" data-column="reviewdepth" data-type="string">Review Depth</th>' if has_pr_metrics else ''}
                                 <th class="sortable-header" data-column="percentage" data-type="number">%</th>
                             </tr>
                         </thead>
@@ -611,7 +632,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-bottom: 30px;">
                 <div>
-                    <h3 style="margin-bottom: 15px; color: #24292e;">Total Contributions</h3>
+                    <h3 style="margin-bottom: 15px; color: #24292e;">Activity Score Distribution</h3>
                     <div class="chart-container" style="height: 300px;">
                         <canvas id="totalDistributionChart"></canvas>
                     </div>
@@ -1062,21 +1083,24 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             }}
             
             localStorage.setItem('hiddenUsers', JSON.stringify(hiddenUsers));
-            updateUserVisibility();
-            recalculateStats();
-            updatePieChart();
-            updateDistributionCharts();
-            createReviewerRatioChart();
+            refreshAllCharts();
         }}
 
         function showAllUsers() {{
             hiddenUsers = [];
             localStorage.setItem('hiddenUsers', JSON.stringify(hiddenUsers));
+            refreshAllCharts();
+        }}
+
+        function refreshAllCharts() {{
             updateUserVisibility();
             recalculateStats();
             updatePieChart();
             updateDistributionCharts();
             createReviewerRatioChart();
+            if (typeof createCycleTimeChart === 'function') createCycleTimeChart();
+            if (typeof createPrSizeScatterChart === 'function') createPrSizeScatterChart();
+            if (typeof createReviewDepthChart === 'function') createReviewDepthChart();
         }}
         
         function updateUserVisibility() {{
@@ -1139,7 +1163,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             const statCards = document.querySelectorAll('.stat-card .stat-number');
             if (statCards.length >= 5) {{
                 statCards[0].textContent = visibleRows.length; // Active Contributors
-                statCards[1].textContent = totalContribs.toLocaleString(); // Total Contributions
+                statCards[1].textContent = totalContribs.toLocaleString(); // Activity Score
                 statCards[2].textContent = totalCommits.toLocaleString(); // Commits
                 statCards[3].textContent = totalPRsCreated.toLocaleString(); // PRs Created
                 statCards[4].textContent = totalReviews.toLocaleString(); // PR Reviews
@@ -1393,7 +1417,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             const summaryHtml = `
                 <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px;">
                     <div>
-                        <strong>Total Contributions</strong><br>
+                        <strong>Activity Score</strong><br>
                         Mean: ${{totalStats.mean.toFixed(1)}}<br>
                         Median: ${{totalStats.median.toFixed(1)}}<br>
                         Std Dev: ${{totalStats.stdDev.toFixed(1)}}<br>
@@ -1450,7 +1474,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             if (window.reviewsDistChart) window.reviewsDistChart.destroy();
             
             // Create distribution charts with visible data
-            window.totalDistChart = createDistributionChart('totalDistributionChart', totalContributions, 'Total Contributions', 'contributions', visibleData);
+            window.totalDistChart = createDistributionChart('totalDistributionChart', totalContributions, 'Activity Score', 'contributions', visibleData);
             window.commitsDistChart = createDistributionChart('commitsDistributionChart', commits, 'Commits', 'commits', visibleData);
             window.prsDistChart = createDistributionChart('prsDistributionChart', prs, 'Pull Requests', 'PRs', visibleData);
             window.reviewsDistChart = createDistributionChart('reviewsDistributionChart', reviews, 'PR Reviews', 'reviews', visibleData);
@@ -1474,7 +1498,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                 y: d.prs_reviewed,
                 label: d.label, // Name
                 username: d.username,
-                total: d.value // Total contributions
+                total: d.value // Activity score
             }}));
 
             // Calculate max values for axis scaling and diagonal line
@@ -1533,6 +1557,12 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                             display: true,
                             text: 'Reviewer Ratio (Created vs Reviewed)'
                         }},
+                        subtitle: {{
+                            display: true,
+                            text: 'Scroll to zoom \u00b7 drag to pan \u00b7 double-click to reset',
+                            font: {{ size: 11 }},
+                            padding: {{ bottom: 8 }}
+                        }},
                         tooltip: {{
                             callbacks: {{
                                 label: function(context) {{
@@ -1540,6 +1570,29 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                                     const d = context.raw;
                                     const ratio = d.x > 0 ? (d.y / d.x).toFixed(1) : d.y;
                                     return `${{d.label}}: Created ${{d.x}}, Reviewed ${{d.y}} (Ratio: ${{ratio}})`;
+                                }}
+                            }}
+                        }},
+                        zoom: {{
+                            limits: {{
+                                x: {{ min: 0, max: maxVal * 1.15, minRange: Math.max(maxVal * 0.1, 5) }},
+                                y: {{ min: 0, max: maxVal * 1.15, minRange: Math.max(maxVal * 0.1, 5) }}
+                            }},
+                            pan: {{
+                                enabled: true,
+                                mode: 'xy'
+                            }},
+                            zoom: {{
+                                wheel: {{ enabled: true, speed: 0.05 }},
+                                pinch: {{ enabled: true }},
+                                mode: 'xy',
+                                onZoomComplete: function({{chart}}) {{
+                                    const xMax = chart.scales.x.max;
+                                    const yMax = chart.scales.y.max;
+                                    const lineMax = Math.max(xMax, yMax) * 1.2;
+                                    if (chart.data.datasets[1]) {{
+                                        chart.data.datasets[1].data = [{{x: 0, y: 0}}, {{x: lineMax, y: lineMax}}];
+                                    }}
                                 }}
                             }}
                         }}
@@ -1553,6 +1606,13 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                             }}
                         }}
                     }}
+                }}
+            }});
+
+            // Double-click resets zoom to the auto-scaled view
+            document.getElementById('reviewerRatioChart').addEventListener('dblclick', function() {{
+                if (window.reviewerRatioChartInstance) {{
+                    window.reviewerRatioChartInstance.resetZoom();
                 }}
             }});
         }}
@@ -1571,10 +1631,15 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             }}
 
             // ----- Cycle Time bar chart -----
-            (function() {{
+            function createCycleTimeChart() {{
+                const visibleUsers = new Set(getVisiblePieData().map(d => d.username));
                 const entries = Object.entries(prMetrics)
-                    .filter(([, m]) => m.median_cycle_hours != null)
+                    .filter(([u, m]) => visibleUsers.has(u) && m.median_cycle_hours != null)
                     .sort((a, b) => a[1].median_cycle_hours - b[1].median_cycle_hours);
+
+                const ctx = document.getElementById('cycleTimeChart');
+                if (!ctx) return;
+                if (window.cycleTimeChartInstance) window.cycleTimeChartInstance.destroy();
                 if (entries.length === 0) return;
 
                 const labels = entries.map(([u]) => {{
@@ -1584,9 +1649,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                 const medians = entries.map(([, m]) => m.median_cycle_hours);
                 const bgColors = medians.map(h => h < 24 ? 'rgba(40,167,69,0.7)' : h < 72 ? 'rgba(255,193,7,0.7)' : 'rgba(220,53,69,0.7)');
 
-                const ctx = document.getElementById('cycleTimeChart');
-                if (!ctx) return;
-                new Chart(ctx.getContext('2d'), {{
+                window.cycleTimeChartInstance = new Chart(ctx.getContext('2d'), {{
                     type: 'bar',
                     data: {{
                         labels: labels,
@@ -1618,15 +1681,18 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                         }}
                     }}
                 }});
-            }})();
+            }}
+            createCycleTimeChart();
 
             // ----- PR Size vs Cycle Time scatter -----
-            (function() {{
-                const datasets = [];
+            function createPrSizeScatterChart() {{
+                const visibleUsers = new Set(getVisiblePieData().map(d => d.username));
                 const colorPalette = ['#FF6384','#36A2EB','#FFCE56','#4BC0C0','#9966FF','#FF9F40','#FF6B6B','#4ECDC4'];
                 let colorIdx = 0;
+                const datasets = [];
 
                 Object.entries(prMetrics).forEach(([username, m]) => {{
+                    if (!visibleUsers.has(username)) return;
                     const ct = m.cycle_times_hours || [];
                     const sizes = m.pr_sizes || [];
                     if (ct.length === 0) return;
@@ -1651,8 +1717,11 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                 }});
 
                 const ctx = document.getElementById('prSizeScatterChart');
-                if (!ctx || datasets.length === 0) return;
-                new Chart(ctx.getContext('2d'), {{
+                if (!ctx) return;
+                if (window.prSizeScatterChartInstance) window.prSizeScatterChartInstance.destroy();
+                if (datasets.length === 0) return;
+
+                window.prSizeScatterChartInstance = new Chart(ctx.getContext('2d'), {{
                     type: 'scatter',
                     data: {{ datasets }},
                     options: {{
@@ -1672,16 +1741,22 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                         }}
                     }}
                 }});
-            }})();
+            }}
+            createPrSizeScatterChart();
 
             // ----- Review Depth stacked bar -----
-            (function() {{
+            function createReviewDepthChart() {{
+                const visibleUsers = new Set(getVisiblePieData().map(d => d.username));
                 const entries = Object.entries(prMetrics)
-                    .filter(([, m]) => (m.reviews_approved + m.reviews_changes_requested + m.reviews_commented) > 0)
+                    .filter(([u, m]) => visibleUsers.has(u) && (m.reviews_approved + m.reviews_changes_requested + m.reviews_commented) > 0)
                     .sort((a, b) =>
                         (b[1].reviews_approved + b[1].reviews_changes_requested + b[1].reviews_commented) -
                         (a[1].reviews_approved + a[1].reviews_changes_requested + a[1].reviews_commented)
                     );
+
+                const ctx = document.getElementById('reviewDepthChart');
+                if (!ctx) return;
+                if (window.reviewDepthChartInstance) window.reviewDepthChartInstance.destroy();
                 if (entries.length === 0) return;
 
                 const labels = entries.map(([u]) => {{
@@ -1689,9 +1764,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                     return pd ? pd.label : u;
                 }});
 
-                const ctx = document.getElementById('reviewDepthChart');
-                if (!ctx) return;
-                new Chart(ctx.getContext('2d'), {{
+                window.reviewDepthChartInstance = new Chart(ctx.getContext('2d'), {{
                     type: 'bar',
                     data: {{
                         labels: labels,
@@ -1715,7 +1788,8 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                         }}
                     }}
                 }});
-            }})();
+            }}
+            createReviewDepthChart();
         }}
     </script>
 </body>
@@ -1775,16 +1849,11 @@ def generate_contributors_table(sorted_contributors, total_contributions_count, 
             um = pr_metrics_summary.get(username, {})
             med_ct = um.get("median_cycle_hours")
             med_size = um.get("median_pr_size")
-            ra = um.get("reviews_approved", 0)
-            rc = um.get("reviews_changes_requested", 0)
-            rcom = um.get("reviews_commented", 0)
-            review_depth_str = f"{ra}A / {rc}C / {rcom}R"
             
-            extra_data_attrs = f' data-cycletime="{med_ct if med_ct is not None else 999999}" data-prsize="{med_size if med_size is not None else 0}" data-reviewdepth="{ra + rc + rcom}"'
+            extra_data_attrs = f' data-cycletime="{med_ct if med_ct is not None else 999999}" data-prsize="{med_size if med_size is not None else 0}"'
             pr_cols = f"""
                 <td>{_fmt_hours(med_ct)}</td>
-                <td>{f'{med_size:,.0f}' if med_size is not None else '—'}</td>
-                <td style="font-size:12px; white-space:nowrap;">{review_depth_str}</td>"""
+                <td>{f'{med_size:,.0f}' if med_size is not None else '—'}</td>"""
         
         table_html += f"""
             <tr data-username="{username}" data-rank="{rank}" data-name="{display_name}" data-total="{contrib_data['total_contributions']}" 
@@ -1838,12 +1907,19 @@ def main():
         output_file = generate_html_report(data, args.output)
         
         print(f"✅ Report generated successfully: {output_file}")
-        print(f"📊 Found {len(data['contributors'])} contributors")
-        print(f"📈 Total contributions: {sum(c['total_contributions'] for c in data['contributors'].values())}")
-        print(f"   • Commits: {sum(c.get('commits', 0) for c in data['contributors'].values())}")
-        print(f"   • PRs Created: {sum(c.get('prs_created', 0) for c in data['contributors'].values())}")
-        print(f"   • PRs Merged: {sum(c.get('prs_merged', 0) for c in data['contributors'].values())}")
-        print(f"   • PR Reviews: {sum(c.get('prs_reviewed', 0) for c in data['contributors'].values())}")
+        all_contributors = data['contributors']
+        if EXCLUDE_BOTS:
+            bots = [k for k in all_contributors if k.endswith("[bot]")]
+            included = {k: v for k, v in all_contributors.items() if k not in set(bots)}
+            print(f"📊 {len(included)} contributors included ({len(bots)} bot account(s) excluded)")
+        else:
+            included = all_contributors
+            print(f"📊 Found {len(included)} contributors")
+        print(f"📈 Activity score total: {sum(c['total_contributions'] for c in included.values())}")
+        print(f"   • Commits: {sum(c.get('commits', 0) for c in included.values())}")
+        print(f"   • PRs Created: {sum(c.get('prs_created', 0) for c in included.values())}")
+        print(f"   • PRs Merged: {sum(c.get('prs_merged', 0) for c in included.values())}")
+        print(f"   • PR Reviews: {sum(c.get('prs_reviewed', 0) for c in included.values())}")
         
     except FileNotFoundError as e:
         print(f"❌ Error: {e}")
