@@ -202,20 +202,25 @@ def generate_html_report(data, output_file="reports/github_report.html"):
 
     pr_velocity_html = ""
     if has_pr_metrics:
-        pr_velocity_html = """
+        pr_velocity_height = max(len(contributors) * 14, 400)
+        pr_velocity_html = f"""
         <div class="chart-section">
             <h2>PR Velocity</h2>
-            <p>How quickly authored PRs move from open to merged, and how PR size relates to cycle time.</p>
+            <p>How quickly authored PRs move from open to merged, and how PR size relates to cycle time.
+            <strong>Good:</strong> median merge time <strong>under 24 hours</strong> (green bars). Small PRs (&lt;200 lines) that merge quickly indicate a healthy review culture. Large PRs with long cycle times suggest work should be broken into smaller pieces.</p>
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px;">
                 <div>
                     <h3 style="margin-bottom: 15px; color: #24292e;">Median Time to Merge by Author</h3>
-                    <div class="chart-container" style="height: 500px;">
+                    <div class="chart-container" style="height: {pr_velocity_height}px;">
                         <canvas id="cycleTimeChart"></canvas>
                     </div>
                 </div>
                 <div>
-                    <h3 style="margin-bottom: 15px; color: #24292e;">PR Size vs Cycle Time</h3>
-                    <div class="chart-container" style="height: 500px;">
+                    <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 15px;">
+                        <h3 style="margin: 0; color: #24292e;">PR Size vs Cycle Time</h3>
+                        <button id="prScatterToggle" onclick="togglePrScatterMode()" style="padding: 4px 10px; font-size: 12px; border: 1px solid #e1e4e8; border-radius: 4px; background: white; cursor: pointer;">Show all PRs</button>
+                    </div>
+                    <div class="chart-container" style="height: {pr_velocity_height}px;">
                         <canvas id="prSizeScatterChart"></canvas>
                     </div>
                 </div>
@@ -224,7 +229,8 @@ def generate_html_report(data, output_file="reports/github_report.html"):
 
         <div class="chart-section">
             <h2>Review Quality</h2>
-            <p>Breakdown of review outcomes per reviewer: Approved, Changes Requested, or Commented.</p>
+            <p>Breakdown of review outcomes per reviewer: Approved, Changes Requested, or Commented.
+            <strong>Good:</strong> a healthy mix of all three states — not exclusively approvals. Some "Changes Requested" reviews show the team catches issues before merge. A reviewer who only approves may not be reviewing thoroughly.</p>
             <div class="chart-container" style="height: 500px;">
                 <canvas id="reviewDepthChart"></canvas>
             </div>
@@ -515,6 +521,139 @@ def generate_html_report(data, output_file="reports/github_report.html"):
         #pieChart:hover {{
             opacity: 0.9;
         }}
+
+        /* Contributor detail modal */
+        .modal-overlay {{
+            display: none;
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.5);
+            z-index: 2000;
+            justify-content: center;
+            align-items: center;
+        }}
+        .modal-overlay.open {{
+            display: flex;
+        }}
+        .modal-content {{
+            background: white;
+            border-radius: 10px;
+            box-shadow: 0 8px 30px rgba(0,0,0,0.25);
+            width: 680px;
+            max-width: 95vw;
+            max-height: 85vh;
+            overflow-y: auto;
+            padding: 28px 32px;
+            position: relative;
+        }}
+        .modal-close {{
+            position: absolute;
+            top: 14px;
+            right: 18px;
+            background: none;
+            border: none;
+            font-size: 22px;
+            cursor: pointer;
+            color: #586069;
+            line-height: 1;
+        }}
+        .modal-close:hover {{ color: #24292e; }}
+        .modal-header {{
+            display: flex;
+            align-items: baseline;
+            gap: 12px;
+            margin-bottom: 20px;
+            padding-bottom: 14px;
+            border-bottom: 1px solid #e1e4e8;
+        }}
+        .modal-header h2 {{ margin: 0; font-size: 1.4em; }}
+        .modal-header .modal-username {{ color: #586069; font-size: 0.95em; }}
+        .modal-stats-grid {{
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 14px;
+            margin-bottom: 22px;
+        }}
+        .modal-stat {{
+            background: #f6f8fa;
+            border: 1px solid #e1e4e8;
+            border-radius: 6px;
+            padding: 14px;
+            text-align: center;
+        }}
+        .modal-stat .val {{
+            font-size: 1.6em;
+            font-weight: 700;
+            color: #0366d6;
+        }}
+        .modal-stat .lbl {{
+            font-size: 0.8em;
+            color: #586069;
+            margin-top: 2px;
+        }}
+        .modal-section-title {{
+            font-weight: 600;
+            margin: 18px 0 8px;
+            color: #24292e;
+        }}
+        .modal-bar-row {{
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin: 6px 0;
+        }}
+        .modal-bar-label {{
+            width: 140px;
+            font-size: 0.85em;
+            text-align: right;
+            color: #586069;
+            flex-shrink: 0;
+        }}
+        .modal-bar-track {{
+            flex: 1;
+            height: 14px;
+            background: #e1e4e8;
+            border-radius: 7px;
+            overflow: hidden;
+        }}
+        .modal-bar-fill {{
+            height: 100%;
+            border-radius: 7px;
+            transition: width 0.4s ease;
+        }}
+        .modal-bar-value {{
+            width: 60px;
+            font-size: 0.85em;
+            font-weight: 600;
+        }}
+        .modal-actions {{
+            margin-top: 18px;
+            padding-top: 14px;
+            border-top: 1px solid #e1e4e8;
+            display: flex;
+            gap: 10px;
+        }}
+        .modal-actions button {{
+            padding: 8px 16px;
+            border-radius: 6px;
+            border: 1px solid #e1e4e8;
+            background: white;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: all 0.2s;
+        }}
+        .modal-actions button:hover {{
+            border-color: #0366d6;
+            color: #0366d6;
+        }}
+        .modal-actions button.primary {{
+            background: #0366d6;
+            color: white;
+            border-color: #0366d6;
+        }}
+        .modal-actions button.primary:hover {{
+            background: #0256b9;
+        }}
     </style>
 </head>
 <body>
@@ -570,6 +709,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                     <h3 style="margin: 0;">Contributors Summary</h3>
                     <button class="show-all-btn" onclick="showAllUsers()" title="Show all hidden users">Show All</button>
                 </div>
+                <p style="color: #586069; margin: 5px 0 0 0; font-size: 0.85em;">Click a contributor to open detailed stats. Hover to reveal the <span style="color: #dc3545; font-weight: 600;">−</span> button which removes them from all charts.</p>
                 <div style="overflow-x: auto;">
                     <table class="contributors-table">
                         <thead>
@@ -595,6 +735,9 @@ def generate_html_report(data, output_file="reports/github_report.html"):
 
         <div class="chart-section">
             <h2>Contributions Over Time</h2>
+            <p style="color: #586069; margin: 0 0 15px 0; font-size: 0.9em; line-height: 1.5;">
+                A healthy team shows <strong>steady, consistent activity</strong> without long gaps. Look for regular cadence rather than spiky bursts followed by silence, which can indicate crunch cycles.
+            </p>
             <div class="timeline-controls">
                 <span style="font-weight: 600;">View:</span>
                 <button class="filter-button active" data-filter="all">All Team</button>
@@ -618,7 +761,9 @@ def generate_html_report(data, output_file="reports/github_report.html"):
 
         <div class="chart-section">
             <h2>Collaboration Health</h2>
-            <p>Analyze the balance between code creation (PRs Created) and team support (PR Reviews). Ideal contributors appear in the top-right or along the diagonal.</p>
+            <p style="color: #586069; margin: 0 0 15px 0; font-size: 0.9em; line-height: 1.5;">
+                Balance between code creation and review support. <strong>Good:</strong> contributors near the diagonal line (balanced output and review). Points <strong>above</strong> the line = strong reviewers who unblock others. Points <strong>below</strong> = high output but may need to review more. A cluster in the <strong>top-right</strong> indicates a highly collaborative team.
+            </p>
             <div class="chart-container" style="height: 500px;">
                 <canvas id="reviewerRatioChart"></canvas>
             </div>
@@ -628,7 +773,9 @@ def generate_html_report(data, output_file="reports/github_report.html"):
 
         <div class="chart-section">
             <h2>Contribution Distribution Analysis</h2>
-            <p>Distribution charts showing the spread of contributions across team members. Outliers are highlighted to identify exceptional contributors.</p>
+            <p style="color: #586069; margin: 0 0 15px 0; font-size: 0.9em; line-height: 1.5;">
+                How evenly work is spread across the team. <strong>Good:</strong> a relatively flat distribution with low standard deviation — this means no single person is a bottleneck or doing all the work. High outliers may signal heroes the team over-relies on; very low contributors may need support or better onboarding.
+            </p>
             
             <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-bottom: 30px;">
                 <div>
@@ -670,11 +817,135 @@ def generate_html_report(data, output_file="reports/github_report.html"):
 
     </div>
 
+    <!-- Contributor detail modal -->
+    <div class="modal-overlay" id="contributorModal" onclick="if(event.target===this)closeModal()">
+        <div class="modal-content">
+            <button class="modal-close" onclick="closeModal()">&times;</button>
+            <div id="modalBody"></div>
+        </div>
+    </div>
+
     <script>
         // Data
         const pieData = {json.dumps(pie_data)};
         const timelineData = {json.dumps(timeline_data)};
         const individualData = {json.dumps(individual_data)};
+        const prMetricsFull = {json.dumps(pr_metrics_summary)};
+
+        // --- Contributor detail modal ---
+        function openContributorModal(username) {{
+            const pd = pieData.find(d => d.username === username);
+            if (!pd) return;
+
+            const pm = prMetricsFull[username] || {{}};
+            const commits = pd.commits || 0;
+            const prsCreated = pd.prs_created || 0;
+            const prsMerged = pd.prs_merged || 0;
+            const reviews = pd.prs_reviewed || 0;
+            const activityScore = pd.value || 0;
+
+            const medCycle = pm.median_cycle_hours;
+            const medSize = pm.median_pr_size;
+            const ra = pm.reviews_approved || 0;
+            const rc = pm.reviews_changes_requested || 0;
+            const rcom = pm.reviews_commented || 0;
+            const totalReviews = ra + rc + rcom;
+
+            function fmtH(h) {{
+                if (h == null) return '—';
+                if (h < 1) return Math.round(h * 60) + 'm';
+                if (h < 24) return h.toFixed(1) + 'h';
+                return (h / 24).toFixed(1) + 'd';
+            }}
+
+            // Find max values from visible data for relative bar widths
+            const maxCommits = Math.max(...pieData.map(d => d.commits || 0), 1);
+            const maxPrs = Math.max(...pieData.map(d => d.prs_created || 0), 1);
+            const maxReviews = Math.max(...pieData.map(d => d.prs_reviewed || 0), 1);
+            const maxScore = Math.max(...pieData.map(d => d.value || 0), 1);
+
+            function bar(label, value, max, color) {{
+                const pct = Math.min(100, (value / max) * 100);
+                return `<div class="modal-bar-row">
+                    <span class="modal-bar-label">${{label}}</span>
+                    <div class="modal-bar-track">
+                        <div class="modal-bar-fill" style="width:${{pct}}%;background:${{color}}"></div>
+                    </div>
+                    <span class="modal-bar-value">${{value.toLocaleString()}}</span>
+                </div>`;
+            }}
+
+            let reviewBreakdown = '';
+            if (totalReviews > 0) {{
+                const maxR = Math.max(ra, rc, rcom, 1);
+                reviewBreakdown = `
+                    <div class="modal-section-title">Review Breakdown</div>
+                    ${{bar('Approved', ra, maxR, 'rgba(40,167,69,0.8)')}}
+                    ${{bar('Changes Requested', rc, maxR, 'rgba(255,193,7,0.85)')}}
+                    ${{bar('Commented', rcom, maxR, 'rgba(54,162,235,0.8)')}}
+                `;
+            }}
+
+            let prMetricsBlock = '';
+            if (medCycle != null || medSize != null) {{
+                prMetricsBlock = `
+                    <div class="modal-section-title">PR Metrics</div>
+                    <div class="modal-stats-grid" style="grid-template-columns: 1fr 1fr;">
+                        <div class="modal-stat">
+                            <div class="val" style="color:${{medCycle != null && medCycle < 24 ? '#28a745' : medCycle != null && medCycle < 72 ? '#ffc107' : '#dc3545'}}">${{fmtH(medCycle)}}</div>
+                            <div class="lbl">Median Cycle Time</div>
+                        </div>
+                        <div class="modal-stat">
+                            <div class="val">${{medSize != null ? medSize.toLocaleString() : '—'}}</div>
+                            <div class="lbl">Median PR Size (lines)</div>
+                        </div>
+                    </div>
+                `;
+            }}
+
+            const html = `
+                <div class="modal-header">
+                    <h2>${{pd.label}}</h2>
+                    <span class="modal-username">@${{username}}</span>
+                </div>
+                <div class="modal-stats-grid">
+                    <div class="modal-stat">
+                        <div class="val">${{activityScore.toLocaleString()}}</div>
+                        <div class="lbl">Activity Score</div>
+                    </div>
+                    <div class="modal-stat">
+                        <div class="val">${{commits.toLocaleString()}}</div>
+                        <div class="lbl">Commits</div>
+                    </div>
+                    <div class="modal-stat">
+                        <div class="val">${{reviews.toLocaleString()}}</div>
+                        <div class="lbl">Reviews</div>
+                    </div>
+                </div>
+                <div class="modal-section-title">Contribution Breakdown</div>
+                ${{bar('Activity Score', activityScore, maxScore, '#0366d6')}}
+                ${{bar('Commits', commits, maxCommits, '#28a745')}}
+                ${{bar('PRs Created', prsCreated, maxPrs, '#6f42c1')}}
+                ${{bar('PRs Merged', prsMerged, maxPrs, '#6f42c1')}}
+                ${{bar('Reviews', reviews, maxReviews, '#e36209')}}
+                ${{prMetricsBlock}}
+                ${{reviewBreakdown}}
+                <div class="modal-actions">
+                    <button class="primary" onclick="closeModal(); selectUserInTimeline('${{username}}')">View Timeline</button>
+                    <button onclick="closeModal()">Close</button>
+                </div>
+            `;
+
+            document.getElementById('modalBody').innerHTML = html;
+            document.getElementById('contributorModal').classList.add('open');
+        }}
+
+        function closeModal() {{
+            document.getElementById('contributorModal').classList.remove('open');
+        }}
+        document.addEventListener('keydown', function(e) {{
+            if (e.key === 'Escape') closeModal();
+        }});
 
         // Pie Chart
         const pieCtx = document.getElementById('pieChart').getContext('2d');
@@ -1632,22 +1903,44 @@ def generate_html_report(data, output_file="reports/github_report.html"):
 
             // ----- Cycle Time bar chart -----
             function createCycleTimeChart() {{
-                const visibleUsers = new Set(getVisiblePieData().map(d => d.username));
-                const entries = Object.entries(prMetrics)
+                const visibleData = getVisiblePieData();
+                const visibleUsers = new Set(visibleData.map(d => d.username));
+
+                // Contributors with merged PRs (have cycle time)
+                const merged = Object.entries(prMetrics)
                     .filter(([u, m]) => visibleUsers.has(u) && m.median_cycle_hours != null)
                     .sort((a, b) => a[1].median_cycle_hours - b[1].median_cycle_hours);
+
+                // Contributors who created PRs but had none merged
+                const mergedUsernames = new Set(merged.map(([u]) => u));
+                const unmerged = visibleData
+                    .filter(d => d.prs_created > 0 && !mergedUsernames.has(d.username))
+                    .sort((a, b) => a.label.localeCompare(b.label));
 
                 const ctx = document.getElementById('cycleTimeChart');
                 if (!ctx) return;
                 if (window.cycleTimeChartInstance) window.cycleTimeChartInstance.destroy();
-                if (entries.length === 0) return;
+                if (merged.length === 0 && unmerged.length === 0) return;
 
-                const labels = entries.map(([u]) => {{
+                const labels = [];
+                const data = [];
+                const bgColors = [];
+                const hasMerged = [];
+
+                merged.forEach(([u, m]) => {{
                     const pd = pieData.find(d => d.username === u);
-                    return pd ? pd.label : u;
+                    labels.push(pd ? pd.label : u);
+                    data.push(m.median_cycle_hours);
+                    bgColors.push(m.median_cycle_hours < 24 ? 'rgba(40,167,69,0.7)' : m.median_cycle_hours < 72 ? 'rgba(255,193,7,0.7)' : 'rgba(220,53,69,0.7)');
+                    hasMerged.push(true);
                 }});
-                const medians = entries.map(([, m]) => m.median_cycle_hours);
-                const bgColors = medians.map(h => h < 24 ? 'rgba(40,167,69,0.7)' : h < 72 ? 'rgba(255,193,7,0.7)' : 'rgba(220,53,69,0.7)');
+
+                unmerged.forEach(d => {{
+                    labels.push(d.label + ' *');
+                    data.push(0);
+                    bgColors.push('rgba(200,200,200,0.4)');
+                    hasMerged.push(false);
+                }});
 
                 window.cycleTimeChartInstance = new Chart(ctx.getContext('2d'), {{
                     type: 'bar',
@@ -1655,7 +1948,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                         labels: labels,
                         datasets: [{{
                             label: 'Median hours to merge',
-                            data: medians,
+                            data: data,
                             backgroundColor: bgColors,
                             borderWidth: 0
                         }}]
@@ -1668,7 +1961,11 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                             legend: {{ display: false }},
                             tooltip: {{
                                 callbacks: {{
-                                    label: ctx2 => fmtHours(ctx2.parsed.x) + ' median'
+                                    label: function(ctx2) {{
+                                        const idx = ctx2.dataIndex;
+                                        if (!hasMerged[idx]) return 'No merged PRs in this period';
+                                        return fmtHours(ctx2.parsed.x) + ' median';
+                                    }}
                                 }}
                             }}
                         }},
@@ -1685,6 +1982,15 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             createCycleTimeChart();
 
             // ----- PR Size vs Cycle Time scatter -----
+            let prScatterShowAll = false;
+
+            function togglePrScatterMode() {{
+                prScatterShowAll = !prScatterShowAll;
+                const btn = document.getElementById('prScatterToggle');
+                btn.textContent = prScatterShowAll ? 'Show averages' : 'Show all PRs';
+                createPrSizeScatterChart();
+            }}
+
             function createPrSizeScatterChart() {{
                 const visibleUsers = new Set(getVisiblePieData().map(d => d.username));
                 const colorPalette = ['#FF6384','#36A2EB','#FFCE56','#4BC0C0','#9966FF','#FF9F40','#FF6B6B','#4ECDC4'];
@@ -1700,20 +2006,32 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                     const displayName = pd ? pd.label : username;
                     const color = colorPalette[colorIdx++ % colorPalette.length];
 
-                    const points = [];
-                    for (let i = 0; i < ct.length && i < sizes.length; i++) {{
-                        points.push({{ x: sizes[i], y: ct[i] }});
+                    if (prScatterShowAll) {{
+                        const points = [];
+                        for (let i = 0; i < ct.length && i < sizes.length; i++) {{
+                            points.push({{ x: sizes[i], y: ct[i] }});
+                        }}
+                        if (points.length === 0) return;
+                        datasets.push({{
+                            label: displayName,
+                            data: points,
+                            backgroundColor: color + '99',
+                            borderColor: color,
+                            pointRadius: 4,
+                            pointHoverRadius: 6
+                        }});
+                    }} else {{
+                        const avgSize = sizes.reduce((a, b) => a + b, 0) / sizes.length;
+                        const avgCt = ct.reduce((a, b) => a + b, 0) / ct.length;
+                        datasets.push({{
+                            label: displayName + ' (' + ct.length + ' PRs)',
+                            data: [{{ x: Math.round(avgSize), y: Math.round(avgCt * 100) / 100 }}],
+                            backgroundColor: color + '99',
+                            borderColor: color,
+                            pointRadius: 7,
+                            pointHoverRadius: 9
+                        }});
                     }}
-                    if (points.length === 0) return;
-
-                    datasets.push({{
-                        label: displayName,
-                        data: points,
-                        backgroundColor: color + '99',
-                        borderColor: color,
-                        pointRadius: 4,
-                        pointHoverRadius: 6
-                    }});
                 }});
 
                 const ctx = document.getElementById('prSizeScatterChart');
@@ -1731,7 +2049,11 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                             legend: {{ display: true, position: 'right', labels: {{ boxWidth: 8 }} }},
                             tooltip: {{
                                 callbacks: {{
-                                    label: ctx2 => ctx2.dataset.label + ': ' + ctx2.parsed.x + ' lines, ' + fmtHours(ctx2.parsed.y)
+                                    label: function(ctx2) {{
+                                        const prefix = ctx2.dataset.label;
+                                        const suffix = prScatterShowAll ? '' : ' avg';
+                                        return prefix + ': ' + ctx2.parsed.x + ' lines, ' + fmtHours(ctx2.parsed.y) + suffix;
+                                    }}
                                 }}
                             }}
                         }},
@@ -1858,7 +2180,7 @@ def generate_contributors_table(sorted_contributors, total_contributions_count, 
         table_html += f"""
             <tr data-username="{username}" data-rank="{rank}" data-name="{display_name}" data-total="{contrib_data['total_contributions']}" 
                 data-commits="{commits}" data-prs="{prs_created}" data-reviews="{prs_reviewed}" data-percentage="{percentage:.1f}"{extra_data_attrs}
-                onclick="selectUserInTimeline('{username}')" title="Click to view individual timeline">
+                onclick="openContributorModal('{username}')" title="Click to view detailed stats">
                 <td><span style="color: {rank_color}; font-weight: bold;">#{rank}</span></td>
                 <td>{name_cell}</td>
                 <td>{contrib_data['total_contributions']:,}</td>
