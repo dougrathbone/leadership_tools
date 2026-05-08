@@ -75,8 +75,12 @@ def generate_html_report(data, output_file="reports/github_report.html"):
     
     # Generate pie chart data with percentages
     pie_data = []
-    colors = ['#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF', '#FF9F40', '#FF6B6B', '#4ECDC4']
-    for i, (username, contrib_data) in enumerate(sorted_contributors):  # All contributors
+    num_contributors = len(sorted_contributors)
+    colors = [
+        f"hsl({int(i * 360 / max(num_contributors, 1))}, {65 + (i % 3) * 10}%, {45 + (i % 4) * 5}%)"
+        for i in range(num_contributors)
+    ]
+    for i, (username, contrib_data) in enumerate(sorted_contributors):
         percentage = (contrib_data['total_contributions'] / total_contributions_count * 100) if total_contributions_count > 0 else 0
         
         # Get improved display name
@@ -88,7 +92,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             'label': display_name,
             'value': contrib_data['total_contributions'],
             'percentage': round(percentage, 1),
-            'color': colors[i % len(colors)],
+            'color': colors[i],
             'username': username,
             'commits': contrib_data.get('commits', 0),
             'prs_created': contrib_data.get('prs_created', 0),
@@ -626,6 +630,19 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             font-size: 0.85em;
             font-weight: 600;
         }}
+        .modal-warning {{
+            margin: 14px 0 4px;
+            padding: 10px 14px;
+            border-radius: 6px;
+            background: #fff8e1;
+            border: 1px solid #f3d97e;
+            color: #5c4400;
+            font-size: 0.85em;
+            line-height: 1.45;
+        }}
+        .modal-warning strong {{
+            color: #4a3700;
+        }}
         .modal-actions {{
             margin-top: 18px;
             padding-top: 14px;
@@ -696,8 +713,8 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                 <strong>Activity Score</strong> = Commits + Reviews (PRs are excluded to avoid double-counting merged commits).
                 <strong>Commits</strong> = merged commits authored in the period.
                 <strong>PRs</strong> = pull requests opened.
-                <strong>Reviews</strong> = pull request reviews submitted.
-                {'<strong>Cycle Time</strong> = median hours from PR open to merge. <strong>PR Size</strong> = median lines changed per PR.' if has_pr_metrics else ''}
+                <strong>Reviews</strong> = unique PRs (authored by others) where this contributor submitted at least one review.
+                {'<strong>Cycle Time</strong> = median hours from PR open to merge. <strong>Diff Churn</strong> = median additions + deletions per PR (counts both sides of moved or generated files, so this is not the same as lines of new code).' if has_pr_metrics else ''}
             </p>
             <div style="max-width: 420px; margin: 0 auto 30px auto;">
                 <div class="chart-container" style="height: 320px;">
@@ -717,11 +734,10 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                                 <th class="sortable-header" data-column="rank" data-type="number">Rank</th>
                                 <th class="sortable-header" data-column="name" data-type="string">Name</th>
                                 <th class="sortable-header" data-column="total" data-type="number" title="Commits + Reviews (PRs excluded to avoid double-counting merged commits)">Activity Score</th>
-                                <th class="sortable-header" data-column="commits" data-type="number">Commits</th>
                                 <th class="sortable-header" data-column="prs" data-type="number">PRs</th>
                                 <th class="sortable-header" data-column="reviews" data-type="number">Reviews</th>
                                 {'<th class="sortable-header" data-column="cycletime" data-type="number">Cycle Time</th>' if has_pr_metrics else ''}
-                                {'<th class="sortable-header" data-column="prsize" data-type="number">PR Size</th>' if has_pr_metrics else ''}
+                                {'<th class="sortable-header" data-column="prsize" data-type="number" title="Median additions + deletions per PR (diff churn, not lines of new code)">Diff Churn</th>' if has_pr_metrics else ''}
                                 <th class="sortable-header" data-column="percentage" data-type="number">%</th>
                             </tr>
                         </thead>
@@ -861,6 +877,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
             // Find max values from visible data for relative bar widths
             const maxCommits = Math.max(...pieData.map(d => d.commits || 0), 1);
             const maxPrs = Math.max(...pieData.map(d => d.prs_created || 0), 1);
+            const maxPrsMerged = Math.max(...pieData.map(d => d.prs_merged || 0), 1);
             const maxReviews = Math.max(...pieData.map(d => d.prs_reviewed || 0), 1);
             const maxScore = Math.max(...pieData.map(d => d.value || 0), 1);
 
@@ -886,6 +903,19 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                 `;
             }}
 
+            let attributionWarning = '';
+            if (prsMerged > commits) {{
+                const gap = prsMerged - commits;
+                attributionWarning = `
+                    <div class="modal-warning">
+                        <strong>Heads up:</strong> ${{prsMerged.toLocaleString()}} merged PRs but only ${{commits.toLocaleString()}} commits credited (gap of ${{gap.toLocaleString()}}).
+                        Every merged PR produces a commit on the default branch, so the missing commits almost certainly exist —
+                        they're likely authored under an email address that isn't linked to this GitHub account, which prevents the
+                        commit-author lookup from finding them. Have the contributor add the email(s) they commit with to their GitHub profile to fix attribution.
+                    </div>
+                `;
+            }}
+
             let prMetricsBlock = '';
             if (medCycle != null || medSize != null) {{
                 prMetricsBlock = `
@@ -897,7 +927,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                         </div>
                         <div class="modal-stat">
                             <div class="val">${{medSize != null ? medSize.toLocaleString() : '—'}}</div>
-                            <div class="lbl">Median PR Size (lines)</div>
+                            <div class="lbl" title="Sum of additions + deletions across all the author's PRs in the period; includes both sides of moved or generated files">Median Diff Churn</div>
                         </div>
                     </div>
                 `;
@@ -922,11 +952,12 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                         <div class="lbl">Reviews</div>
                     </div>
                 </div>
+                ${{attributionWarning}}
                 <div class="modal-section-title">Contribution Breakdown</div>
                 ${{bar('Activity Score', activityScore, maxScore, '#0366d6')}}
                 ${{bar('Commits', commits, maxCommits, '#28a745')}}
                 ${{bar('PRs Created', prsCreated, maxPrs, '#6f42c1')}}
-                ${{bar('PRs Merged', prsMerged, maxPrs, '#6f42c1')}}
+                ${{bar('PRs Merged', prsMerged, maxPrsMerged, '#6f42c1')}}
                 ${{bar('Reviews', reviews, maxReviews, '#e36209')}}
                 ${{prMetricsBlock}}
                 ${{reviewBreakdown}}
@@ -965,7 +996,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                 maintainAspectRatio: false,
                 plugins: {{
                     legend: {{
-                        position: 'right'
+                        display: false
                     }},
                     tooltip: {{
                         callbacks: {{
@@ -1903,44 +1934,22 @@ def generate_html_report(data, output_file="reports/github_report.html"):
 
             // ----- Cycle Time bar chart -----
             function createCycleTimeChart() {{
-                const visibleData = getVisiblePieData();
-                const visibleUsers = new Set(visibleData.map(d => d.username));
-
-                // Contributors with merged PRs (have cycle time)
-                const merged = Object.entries(prMetrics)
-                    .filter(([u, m]) => visibleUsers.has(u) && m.median_cycle_hours != null)
+                const visibleUsers = new Set(getVisiblePieData().map(d => d.username));
+                const entries = Object.entries(prMetrics)
+                    .filter(([u, m]) => visibleUsers.has(u) && m.median_cycle_hours != null && (m.cycle_times_hours || []).length >= 2)
                     .sort((a, b) => a[1].median_cycle_hours - b[1].median_cycle_hours);
-
-                // Contributors who created PRs but had none merged
-                const mergedUsernames = new Set(merged.map(([u]) => u));
-                const unmerged = visibleData
-                    .filter(d => d.prs_created > 0 && !mergedUsernames.has(d.username))
-                    .sort((a, b) => a.label.localeCompare(b.label));
 
                 const ctx = document.getElementById('cycleTimeChart');
                 if (!ctx) return;
                 if (window.cycleTimeChartInstance) window.cycleTimeChartInstance.destroy();
-                if (merged.length === 0 && unmerged.length === 0) return;
+                if (entries.length === 0) return;
 
-                const labels = [];
-                const data = [];
-                const bgColors = [];
-                const hasMerged = [];
-
-                merged.forEach(([u, m]) => {{
+                const labels = entries.map(([u]) => {{
                     const pd = pieData.find(d => d.username === u);
-                    labels.push(pd ? pd.label : u);
-                    data.push(m.median_cycle_hours);
-                    bgColors.push(m.median_cycle_hours < 24 ? 'rgba(40,167,69,0.7)' : m.median_cycle_hours < 72 ? 'rgba(255,193,7,0.7)' : 'rgba(220,53,69,0.7)');
-                    hasMerged.push(true);
+                    return pd ? pd.label : u;
                 }});
-
-                unmerged.forEach(d => {{
-                    labels.push(d.label + ' *');
-                    data.push(0);
-                    bgColors.push('rgba(200,200,200,0.4)');
-                    hasMerged.push(false);
-                }});
+                const medians = entries.map(([, m]) => m.median_cycle_hours);
+                const bgColors = medians.map(h => h < 24 ? 'rgba(40,167,69,0.7)' : h < 72 ? 'rgba(255,193,7,0.7)' : 'rgba(220,53,69,0.7)');
 
                 window.cycleTimeChartInstance = new Chart(ctx.getContext('2d'), {{
                     type: 'bar',
@@ -1948,7 +1957,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                         labels: labels,
                         datasets: [{{
                             label: 'Median hours to merge',
-                            data: data,
+                            data: medians,
                             backgroundColor: bgColors,
                             borderWidth: 0
                         }}]
@@ -1961,11 +1970,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                             legend: {{ display: false }},
                             tooltip: {{
                                 callbacks: {{
-                                    label: function(ctx2) {{
-                                        const idx = ctx2.dataIndex;
-                                        if (!hasMerged[idx]) return 'No merged PRs in this period';
-                                        return fmtHours(ctx2.parsed.x) + ' median';
-                                    }}
+                                    label: ctx2 => fmtHours(ctx2.parsed.x) + ' median'
                                 }}
                             }}
                         }},
@@ -2001,7 +2006,7 @@ def generate_html_report(data, output_file="reports/github_report.html"):
                     if (!visibleUsers.has(username)) return;
                     const ct = m.cycle_times_hours || [];
                     const sizes = m.pr_sizes || [];
-                    if (ct.length === 0) return;
+                    if (ct.length < 2) return;
                     const pd = pieData.find(d => d.username === username);
                     const displayName = pd ? pd.label : username;
                     const color = colorPalette[colorIdx++ % colorPalette.length];
@@ -2184,7 +2189,6 @@ def generate_contributors_table(sorted_contributors, total_contributions_count, 
                 <td><span style="color: {rank_color}; font-weight: bold;">#{rank}</span></td>
                 <td>{name_cell}</td>
                 <td>{contrib_data['total_contributions']:,}</td>
-                <td>{commits:,}</td>
                 <td>{prs_created:,}</td>
                 <td>{prs_reviewed:,}</td>{pr_cols}
                 <td>

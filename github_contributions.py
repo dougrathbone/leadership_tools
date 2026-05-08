@@ -1,5 +1,17 @@
-from github import Github, Auth
-from github import RateLimitExceededException, GithubException
+try:
+    from github import Github, Auth
+    from github import RateLimitExceededException, GithubException
+except ImportError:
+    import sys
+    sys.stderr.write(
+        "\nError: PyGithub is not installed in the current Python environment.\n\n"
+        "If you're using the project virtualenv, activate it first:\n"
+        "    source .venv/bin/activate\n"
+        "    python github_contributions.py\n\n"
+        "Or install PyGithub directly:\n"
+        "    pip install PyGithub\n\n"
+    )
+    sys.exit(1)
 import getpass
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
@@ -158,6 +170,12 @@ if not access_token:
         print("Example: export GITHUB_TOKEN='your_token_here'")
         exit(1)
 
+if not access_token or not access_token.strip():
+    print("\nError: GitHub token is empty.")
+    print("Set GITHUB_TOKEN or paste a non-empty token at the prompt.")
+    print("Example: export GITHUB_TOKEN='your_token_here'")
+    exit(1)
+
 # Replace with the name of the organization
 ORG_NAME = "heydovetail"
 
@@ -165,8 +183,43 @@ ORG_NAME = "heydovetail"
 # which can sleep 35+ minutes on secondary rate limits; we handle retries ourselves).
 g = Github(auth=Auth.Token(access_token), retry=False)
 
+# Pre-flight: verify the token before doing anything expensive, and translate
+# the typical failures into actionable messages instead of a raw stack trace.
+try:
+    authenticated_user = g.get_user().login
+    print(f"Authenticated as @{authenticated_user}")
+except GithubException as e:
+    if e.status == 401:
+        print("\nError: GitHub rejected the token (401 Bad credentials).")
+        print("Possible causes:")
+        print("  • The token is expired or was revoked.")
+        print("  • You pasted only part of the token, or pasted the wrong value.")
+        print("  • The env var is unset in this shell — check with: echo ${GITHUB_TOKEN:+set}")
+        print("\nFix: regenerate at https://github.com/settings/tokens and re-export GITHUB_TOKEN.")
+    else:
+        print(f"\nError: GitHub auth check failed ({e.status}): {e.data}")
+    exit(1)
+except Exception as e:
+    print(f"\nError: could not reach GitHub to verify the token: {e}")
+    exit(1)
+
 # Get the organization
-org = g.get_organization(ORG_NAME)
+try:
+    org = g.get_organization(ORG_NAME)
+except GithubException as e:
+    if e.status in (401, 403):
+        print(f"\nError: Token cannot access the '{ORG_NAME}' organization ({e.status}).")
+        print("For a fine-grained PAT (github_pat_…), the token must:")
+        print(f"  • Have '{ORG_NAME}' selected as the Resource owner.")
+        print("  • Grant read access to: Contents, Pull requests, Metadata, and org Members.")
+        print("For a classic PAT (ghp_…), it needs 'repo' and 'read:org' scopes.")
+        print("\nRegenerate at https://github.com/settings/tokens and re-export GITHUB_TOKEN.")
+    elif e.status == 404:
+        print(f"\nError: Organization '{ORG_NAME}' not found (404).")
+        print("Check ORG_NAME at the top of this script, or that your token can see it.")
+    else:
+        print(f"\nError fetching organization '{ORG_NAME}' ({e.status}): {e.data}")
+    exit(1)
 
 # Initialize dictionaries to store contribution data
 total_contributions = defaultdict(lambda: {
@@ -449,7 +502,8 @@ try:
                 user_cycle_times = []
                 user_pr_sizes = []
                 user_review_states = {"approved": 0, "changes_requested": 0, "commented": 0}
-                
+                user_review_days = []
+
                 for pr in recent_prs:
                     if pr.user and pr.user.login == username:
                         if pr.created_at >= start_date:
@@ -462,20 +516,33 @@ try:
                             prs_merged += 1
                             hours = (pr.merged_at - pr.created_at).total_seconds() / 3600
                             user_cycle_times.append(round(hours, 2))
-                    
+                        # Skip reviews on own PRs: comment-replies and resolve-conversation
+                        # actions surface as COMMENTED reviews and would inflate prs_reviewed.
+                        continue
+
+                    states_on_pr = set()
+                    earliest_sub = None
                     for review in pr_reviews_cache.get(pr.number, []):
                         if not review.user or review.user.login != username:
                             continue
                         sub = getattr(review, "submitted_at", None)
-                        if sub is not None and sub >= start_date:
-                            prs_reviewed += 1
-                            state = (review.state or "").upper()
-                            if state == "APPROVED":
-                                user_review_states["approved"] += 1
-                            elif state == "CHANGES_REQUESTED":
-                                user_review_states["changes_requested"] += 1
-                            else:
-                                user_review_states["commented"] += 1
+                        if sub is None or sub < start_date:
+                            continue
+                        states_on_pr.add((review.state or "").upper())
+                        if earliest_sub is None or sub < earliest_sub:
+                            earliest_sub = sub
+
+                    if states_on_pr:
+                        prs_reviewed += 1
+                        # Collapse multiple submissions on the same PR into one outcome.
+                        if "APPROVED" in states_on_pr:
+                            user_review_states["approved"] += 1
+                        elif "CHANGES_REQUESTED" in states_on_pr:
+                            user_review_states["changes_requested"] += 1
+                        else:
+                            user_review_states["commented"] += 1
+                        if earliest_sub is not None:
+                            user_review_days.append(earliest_sub.strftime("%Y-%m-%d"))
                 
                 # Total contributions: commits (includes all commits from merged PRs) + reviews
                 # Note: We don't add prs_merged here because those commits are already counted in commit_count
@@ -514,13 +581,8 @@ try:
                                 merge_date = pr.merged_at.strftime("%Y-%m-%d")
                                 daily_contributions[username][merge_date]["prs_merged"] += 1
                     
-                    for pr in recent_prs:
-                        for review in pr_reviews_cache.get(pr.number, []):
-                            if review.user and review.user.login == username:
-                                sub = getattr(review, "submitted_at", None)
-                                if sub is not None and sub >= start_date:
-                                    rday = sub.strftime("%Y-%m-%d")
-                                    daily_contributions[username][rday]["prs_reviewed"] += 1
+                    for rday in user_review_days:
+                        daily_contributions[username][rday]["prs_reviewed"] += 1
                 
                 if user_cycle_times or user_pr_sizes or any(v > 0 for v in user_review_states.values()):
                     pr_metrics[username]["cycle_times_hours"].extend(user_cycle_times)
