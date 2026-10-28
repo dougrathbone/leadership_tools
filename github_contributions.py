@@ -13,6 +13,7 @@ except ImportError:
     )
     sys.exit(1)
 import getpass
+import sys
 from datetime import datetime, timedelta, timezone
 from collections import defaultdict
 import json
@@ -57,6 +58,13 @@ def handle_rate_limit(func, *args, **kwargs):
                     raise e
                 delay = min(60, base_delay * (2 ** attempt)) + random.uniform(0, 2)
                 print(f"   Secondary rate limit (403). Waiting {delay:.0f}s... (attempt {attempt + 1}/{max_retries})")
+                time.sleep(delay)
+            elif e.status in (502, 503, 504):
+                if attempt == max_retries - 1:
+                    print(f"GitHub {e.status} after {max_retries} attempts.")
+                    raise e
+                delay = min(30, base_delay * (2 ** attempt)) + random.uniform(0, 1)
+                print(f"   GitHub {e.status}. Retrying in {delay:.0f}s... (attempt {attempt + 1}/{max_retries})")
                 time.sleep(delay)
             else:
                 raise e
@@ -261,6 +269,7 @@ try:
     if alt_start_date:
         # Make the parsed date timezone-aware (UTC)
         start_date = datetime.strptime(alt_start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+        start_date_str = start_date.strftime("%Y-%m-%d")
     else:
         start_date = default_start_date
 except (EOFError, KeyboardInterrupt):
@@ -283,11 +292,16 @@ if existing_state:
         if resume_choice == 'y':
             resume_from_state = True
             processed_repo_names = set(existing_state.get('processed_repos', []))
-            # Restore data structures
-            total_contributions.update(existing_state.get('total_contributions', {}))
+            # Restore data structures, keeping defaultdict nesting so new dates/repos work.
+            for user, data in existing_state.get('total_contributions', {}).items():
+                total_contributions[user].update(data)
             user_profiles.update(existing_state.get('user_profiles', {}))
-            daily_contributions.update(existing_state.get('daily_contributions', {}))
-            repo_contributions.update(existing_state.get('repo_contributions', {}))
+            for user, days in existing_state.get('daily_contributions', {}).items():
+                for date, metrics in days.items():
+                    daily_contributions[user][date].update(metrics)
+            for user, repos in existing_state.get('repo_contributions', {}).items():
+                for repo_name, metrics in repos.items():
+                    repo_contributions[user][repo_name].update(metrics)
             for u, m in existing_state.get('pr_metrics', {}).items():
                 pr_metrics[u]["cycle_times_hours"].extend(m.get("cycle_times_hours", []))
                 pr_metrics[u]["pr_sizes"].extend(m.get("pr_sizes", []))
@@ -302,6 +316,33 @@ print("Fetching repository list...")
 repos = handle_rate_limit(org.get_repos, type='all', sort='updated', direction='desc')
 repos_list = list(repos)  # This forces PyGithub to fetch all pages
 organization_repo_total = len(repos_list)
+
+# Compare against the org's self-reported counts to catch under-scoped tokens.
+# Fine-grained PATs only return the repos they were explicitly granted access to,
+# which can silently exclude the highest-activity repos in an org.
+try:
+    expected_total = (org.public_repos or 0) + (org.owned_private_repos or 0)
+    if expected_total and organization_repo_total < expected_total:
+        missing = expected_total - organization_repo_total
+        print()
+        print("=" * 72)
+        print(f"WARNING: token can only see {organization_repo_total} of ~{expected_total} repos in '{ORG_NAME}'.")
+        print(f"         {missing} repos are hidden from this token and will NOT be scanned.")
+        print("         If you're using a fine-grained PAT (github_pat_…), regenerate it with")
+        print("         'Resource owner: " + ORG_NAME + "' and 'Repository access: All repositories'.")
+        print("         A classic PAT (ghp_…) with 'repo' + 'read:org' returns every repo you can see.")
+        print("=" * 72)
+        try:
+            ack = input("Continue anyway with a partial scan? (y/n): ").lower().strip()
+            if ack != 'y':
+                print("Aborting. Regenerate the token and re-run.")
+                exit(1)
+        except (EOFError, KeyboardInterrupt):
+            print("Aborting (no terminal to confirm). Regenerate the token and re-run.")
+            exit(1)
+except GithubException:
+    # If we can't read the org's repo counts, fall through — better to scan than to abort.
+    pass
 total_repos = len(repos_list)
 
 # Filter out already processed repositories if resuming
@@ -331,6 +372,9 @@ print("Press Ctrl+C to stop gracefully at any time...\n")
 # Track timing for progress estimation
 scan_start_time = time.time()
 processed_repos = list(processed_repo_names) if resume_from_state else []
+empty_repos = []
+permission_errored_repos = []
+other_errored_repos = []
 
 # Set up signal handler for graceful shutdown
 def signal_handler(signum, frame):
@@ -375,7 +419,7 @@ try:
 
         # Proactive rate-limit check: sleep until reset if budget is low
         try:
-            rate = g.get_rate_limit().core
+            rate = g.get_rate_limit().rate
             if rate.remaining < 200:
                 sleep_seconds = (rate.reset - datetime.now(timezone.utc)).total_seconds() + 5
                 if sleep_seconds > 0:
@@ -424,8 +468,11 @@ try:
                     pr_reviews_cache[pr.number] = []
                     
                 if (pr_idx + 1) % 100 == 0:
-                    rate = g.get_rate_limit().core
-                    print(f"     Processed {pr_idx + 1} PRs... (API budget: {rate.remaining}/{rate.limit})")
+                    try:
+                        rate = g.get_rate_limit().rate
+                        print(f"     Processed {pr_idx + 1} PRs... (API budget: {rate.remaining}/{rate.limit})")
+                    except Exception:
+                        print(f"     Processed {pr_idx + 1} PRs...")
             
             if skipped_reviews:
                 print(f"   Warning: {skipped_reviews} PR review fetches skipped due to 403")
@@ -472,7 +519,10 @@ try:
             
             for contrib_idx, username in enumerate(usernames_sorted, start=1):
                 contributor = contributor_map.get(username)
-                name = (contributor.name or "N/A") if contributor else "N/A"
+                try:
+                    name = (contributor.name or "N/A") if contributor else "N/A"
+                except Exception:
+                    name = "N/A"
                 
                 if username not in user_profiles:
                     if contributor:
@@ -508,9 +558,15 @@ try:
                     if pr.user and pr.user.login == username:
                         if pr.created_at >= start_date:
                             prs_created += 1
+                            try:
+                                additions = pr.additions or 0
+                                deletions = pr.deletions or 0
+                            except Exception:
+                                additions = 0
+                                deletions = 0
                             user_pr_sizes.append({
-                                "additions": pr.additions,
-                                "deletions": pr.deletions,
+                                "additions": additions,
+                                "deletions": deletions,
                             })
                         if pr.merged and pr.merged_at and pr.merged_at >= start_date:
                             prs_merged += 1
@@ -592,7 +648,7 @@ try:
 
             active_contributors = len([u for u in total_contributions if total_contributions[u]['total_contributions'] > 0])
             try:
-                rate = g.get_rate_limit().core
+                rate = g.get_rate_limit().rate
                 rate_info = f"API budget: {rate.remaining}/{rate.limit}"
             except Exception:
                 rate_info = "API budget: unknown"
@@ -646,17 +702,51 @@ try:
             else:
                 print(f"   Overall progress: {idx}/{total_repos} repositories ({progress_percent:.1f}%)")
         except Exception as e:
-            if hasattr(e, 'status') and e.status == 409 and "Git Repository is empty." in str(e.data):
-                print("Skipping empty repository.")
+            status = getattr(e, 'status', None)
+            data_str = str(getattr(e, 'data', '') or '')
+            if status == 409 and "Git Repository is empty." in data_str:
+                print(f"   ⚠ Skipping {repo_name}: empty repository.")
+                empty_repos.append(repo_name)
+            elif status == 403 and "Resource not accessible by personal access token" in data_str:
+                print(f"   ⛔ Skipping {repo_name}: token lacks Pull requests / Contents read permission for this repo.")
+                permission_errored_repos.append(repo_name)
             else:
-                print(f"Error processing repository: {str(e)}")
+                print(f"   ✗ Error processing {repo_name}: {str(e)}")
+                other_errored_repos.append((repo_name, str(e)))
 
 except KeyboardInterrupt:
     print(f"\n\nGracefully stopping... Processed {len(processed_repos)} repositories.")
     print("Final state and data already saved during processing.")
 
-# Final save of all data
-print(f"\nScan completed! Processed {len(processed_repos)} repositories.")
+# End-of-scan summary
+print()
+print("=" * 72)
+print(f"Scan summary for {ORG_NAME}")
+print("=" * 72)
+print(f"  Repositories visible to token: {organization_repo_total}")
+print(f"  Successfully processed:        {len(processed_repos)}")
+if empty_repos:
+    print(f"  Skipped (empty):               {len(empty_repos)}")
+if permission_errored_repos:
+    print(f"  Skipped (token permissions):   {len(permission_errored_repos)}")
+    for r in permission_errored_repos:
+        print(f"      • {r}")
+    print()
+    print("  ⚠ The token cannot read pull requests / contents in the repos above.")
+    print("    For a fine-grained PAT, add Read access to: Contents, Pull requests,")
+    print("    Metadata (auto), and org Members. Then regenerate and re-run.")
+    print("    Manage at: https://github.com/settings/personal-access-tokens")
+if other_errored_repos:
+    print(f"  Errored (other):               {len(other_errored_repos)}")
+    for r, err in other_errored_repos:
+        print(f"      • {r}: {err}")
+print("=" * 72)
+scan_had_errors = bool(permission_errored_repos or other_errored_repos)
+if not processed_repos:
+    print("⛔ No repositories were processed — the report will be empty.")
+elif scan_had_errors:
+    print("⚠ Report will be incomplete until the repositories listed above are scanned.")
+print()
 
 # Save final progress data
 save_progress_data(total_contributions, user_profiles, daily_contributions, 
@@ -664,14 +754,23 @@ save_progress_data(total_contributions, user_profiles, daily_contributions,
                   organization_repository_count=organization_repo_total,
                   pr_metrics=pr_metrics)
 
-# Clean up state file since scan is complete
-try:
-    if os.path.exists("reports/scan_state.pkl"):
-        os.remove("reports/scan_state.pkl")
-        print("Cleaned up temporary state file.")
-except:
-    pass
+# Keep the resume file when a repo failed, so the next run can retry just those repos.
+if scan_had_errors:
+    print("Kept reports/scan_state.pkl so you can resume and retry the failed repositories.")
+else:
+    try:
+        if os.path.exists("reports/scan_state.pkl"):
+            os.remove("reports/scan_state.pkl")
+            print("Cleaned up temporary state file.")
+    except OSError:
+        pass
 
-print("\nScan completed successfully!")
+if processed_repos and not scan_had_errors:
+    print("\nScan completed successfully!")
+elif processed_repos:
+    print("\nScan completed with errors — see summary above.")
+else:
+    print("\nScan failed: no repositories were processed.")
+    sys.exit(1)
 print("Output saved to output.csv")
 print("Comprehensive data saved to reports/contributions_data.json")
